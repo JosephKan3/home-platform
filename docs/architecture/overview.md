@@ -115,6 +115,7 @@ Each row links to the ADR holding the full reasoning, consequences, and rejected
 | [0003](../decisions/0003-compute-progression.md) | Lambda + Fargate. Kubernetes dropped | ~$200/mo for workloads that fit in Lambda; every capability has a managed replacement |
 | [0004](../decisions/0004-repository-strategy.md) | Single monorepo, enforced internal layering | Multi-repo decouples *teams*; there is one team |
 | [0005](../decisions/0005-ai-automation-boundary.md) | Durable-workflow Platform API with approval gates | A Platform API is not a security control by itself; workflows + scoped roles + gates are |
+| [0006](../decisions/0006-domains.md) | Two domains, Route53-registered and hosted | Product identity separate from platform identity; DNS in-account removes cross-account friction |
 
 ### 3.1 Accounts and identity
 
@@ -317,9 +318,74 @@ sit outside those three methods.
 4. The API returns an opaque `operationId`, never an execution ARN, so callers never encode
    engine specifics.
 
+### 3.6 Domains
+
+Two domains, deliberately separate (ADR-0006):
+
+- **`<yourname>.com`** — platform and personal. Portfolio site, `api.`, `auth.`, and the
+  `internal.` **private** hosted zone which resolves only over Tailscale. Registered in
+  Route53 (~$14/yr, free WHOIS privacy, hosted zone in the same account so ACM validation
+  and CloudFront aliases need no cross-account role).
+- **`newnotams.net`** — the product. Nothing platform-related. Left at its current registrar
+  with NS **delegated** to Route53, not transferred; avoids the 60-day transfer lock and
+  decouples DNS control from registrar migration.
+
+Keeping product identity separate from platform identity matches ADR-0004: if NewNotams is
+ever spun out, the domain goes with it and nothing is entangled.
+
+Registration is not a CloudFormation resource, so it joins the small documented set of
+manual Phase 0 bootstrap steps. Everything downstream — records, certificates, aliases — is
+CDK-managed.
+
 ---
 
-## 4. Supporting technology
+## 4. Applications
+
+Full assessments in [applications.md](applications.md). A platform built without a customer
+is always wrong, so these define what actually gets built.
+
+### NewNotams (`newnotams.net`) — the driving application
+
+Aviation weather and NOTAM briefing for Canadian airspace. Next.js 16 App Router, React 19,
+Auth.js v5 (Google OAuth + credentials), Upstash Redis, Web Push via VAPID, hourly external
+cron. Currently on Vercel.
+
+It exercises nearly every platform capability without being trivial: authenticated
+server-rendered app, a datastore, a scheduled background job with real state, third-party
+API egress, secrets, and a public domain. A weather brief that silently stops arriving is a
+genuine incident with a genuine SLO — which is what makes the observability work matter.
+
+Migration: **Phase 1**, Next.js on Lambda via OpenNext + CloudFront, **no VPC attachment**,
+Upstash retained initially, external cron → EventBridge Scheduler with direct Lambda invoke
+(so the notify path stops being internet-reachable). **Phase 2**, Upstash → DynamoDB, which
+fits the access patterns exactly and preserves the no-VPC property.
+
+### Personal site — the first deployment
+
+Next.js 12, fully static (no `getServerSideProps` anywhere), plus two OANDA API routes.
+
+The smallest possible end-to-end proof of the Phase 0 pipeline: GitHub → OIDC → CDK →
+CloudFormation → S3 → CloudFront → ACM → Route53, with no database, no VPC, no state.
+The OANDA routes become an **EventBridge-scheduled Lambda writing JSON to S3** — removes all
+request-path compute, caches at the edge, keeps the OANDA token off any internet-reachable
+surface, and survives OANDA outages.
+
+### What reading the real code changed
+
+1. **Neither application needs a VPC.** Both run as VPC-less Lambdas with free unmetered
+   egress. This validates the no-NAT decision directly — the constraint costs nothing here.
+2. **RDS is deferred out of Phase 1.** Neither app needs relational storage. Saves ~$12/mo
+   and drops the Phase 1 target from $20-35 to **$8-15**.
+3. **A shared ALB is deferred out of Phase 2.** Both apps front on CloudFront. The $17/mo ALB
+   waits for a genuinely long-running container, which may never appear.
+4. **EventBridge Scheduler matters more than expected** — both apps want scheduled work.
+   First-class construct.
+5. **The paved road's first template writes itself:** "Next.js on Lambda via OpenNext +
+   CloudFront." Two real consumers, so the abstraction is validated rather than speculative.
+
+---
+
+## 5. Supporting technology
 
 | Area | Choice | Note |
 | --- | --- | --- |
@@ -353,7 +419,7 @@ A third is added only when a real third case exists.
 
 ---
 
-## 5. Cost
+## 6. Cost
 
 Full detail in [cost-model.md](../cost/cost-model.md).
 
@@ -374,14 +440,15 @@ certs.
 
 Roughly **$140-200/mo avoided** against the original design.
 
-**Budget by phase:**
+**Budget by phase** (revised down after reading the real applications — neither needs RDS
+or an ALB):
 
 | Phase | Target | Adds |
 | --- | --- | --- |
-| 0 — Foundation | **$3-8** | Org, 2 accounts, SCPs, Identity Center, Route53, S3+CloudFront, OIDC, GuardDuty |
-| 1 — Network + data | **$20-35** | VPC (free), Tailscale `t4g.nano`, RDS `t4g.micro`, Lambda, CloudWatch |
-| 2 — Containers | **$50-80** | Shared ALB, 2-3 Fargate tasks, Authentik, CodeDeploy, Grafana Cloud |
-| 3 — Automation | **$70-110** | Platform API, Step Functions, MCP server, deploy bot |
+| 0 — Foundation | **$3-8** | Org, 2 accounts, SCPs, Identity Center, domain, Route53, personal site on S3+CloudFront, OIDC, GuardDuty |
+| 1 — NewNotams on AWS | **$8-15** | VPC (free), Tailscale `t4g.nano`, Lambda + OpenNext, EventBridge Scheduler, CloudWatch. **RDS deferred.** |
+| 2 — Delivery + data | **$25-50** | CodeDeploy canaries, DynamoDB, Grafana Cloud, identity. **ALB only if needed.** |
+| 3 — Automation | **$50-90** | Platform API, Step Functions, MCP server, deploy bot |
 
 **Remaining traps:** public IPv4 at $3.60/mo per address; CloudWatch Logs default retention
 is *infinite*; cross-AZ data transfer at $0.01/GB each way; accidental NAT Gateway creation
@@ -395,16 +462,16 @@ day one (with one account, tags *are* the billing breakdown).
 
 ---
 
-## 6. Roadmap
+## 7. Roadmap
 
 Full detail with checklists in [roadmap.md](roadmap.md). Each phase gates on the previous
 one's exit criteria plus a clean billing cycle.
 
 | Phase | Focus | Exit criterion |
 | --- | --- | --- |
-| **0** | Org, accounts, SCPs, identity, CI/CD, first static site | **A merge to `main` deploys to production with nobody touching the console.** Bill under $8. A CI test proves the dev role is denied a prod-tagged action. |
-| **1** | VPC, Tailscale, RDS, backups, first Lambda service, SLOs | A real app serves traffic with burn-rate alerts. **A database restore has been performed and timed.** No NAT Gateway exists. |
-| **2** | Fargate, shared ALB, CodeDeploy canaries, Authentik, supply chain | **A canary has automatically rolled back on an injected failure.** All internal tools behind SSO + Tailscale. |
+| **0** | Org, accounts, SCPs, identity, domain, CI/CD, **personal site** | **A merge to `main` deploys the personal site to production with nobody touching the console.** Bill under $8. A CI test proves the dev role is denied a prod-tagged action. |
+| **1** | **NewNotams off Vercel**, EventBridge cron, OTel, SLOs, VPC, Tailscale | NewNotams serves production traffic on AWS with burn-rate alerts. Vercel switched off. No NAT Gateway exists. |
+| **2** | CodeDeploy canaries, Upstash → DynamoDB, identity, supply chain | **A canary has automatically rolled back on an injected failure.** A restore has been performed and timed. |
 | **3** | Platform API, MCP server, deploy bot, paved-road CLI, chaos | **A new service goes zero-to-production via one CLI command** with observability, alarms, and a runbook. |
 
 **Continuous:** an ADR for every non-obvious decision; one current architecture diagram;
@@ -413,7 +480,7 @@ teardown runbook per phase.
 
 ---
 
-## 7. Gaps closed from the original design
+## 8. Gaps closed from the original design
 
 Things absent from the handoff that materially matter:
 
@@ -435,7 +502,7 @@ Things absent from the handoff that materially matter:
 
 ---
 
-## 8. Deliberate compromises
+## 9. Deliberate compromises
 
 Recorded so they can be defended rather than discovered.
 
@@ -452,28 +519,34 @@ Recorded so they can be defended rather than discovered.
 
 ---
 
-## 9. Open questions
+## 10. Open questions
 
 Deliberately unresolved. Answer them when the need is concrete, not before.
 
-1. **Domain name.** Everything DNS-related is blocked on this. Phase 0.
-2. **Which application is first.** NewNotams is the presumed candidate. **A platform built
-   without a customer is always wrong** — pick one real app and drive every decision from
-   its needs.
-3. **IPv6 coverage in practice.** How much actually works over EIGW. Phase 1 answers this
+1. **The platform domain name.** The only true Phase 0 blocker. `newnotams.net` is settled;
+   the personal/platform `.com` is not. Everything DNS-touching waits on it.
+2. **IPv6 coverage in practice.** How much actually works over EIGW. Phase 1 answers this
    empirically; the answer determines how many public IPv4 addresses get paid for.
-4. **Authentik vs Cognito.** Authentik is the better portfolio artifact and more flexible;
-   Cognito is $0 and zero-ops at this scale. Decide in Phase 2 against real requirements.
-5. **Step Functions sufficiency.** Whether ASL expresses the approval and compensation
+3. **Authentik vs Cognito vs staying on Auth.js.** With only NewNotams needing identity,
+   Authentik costs a Fargate task plus an ALB (~$29/mo) to replace something that works.
+   Decide in Phase 2 against real requirements, not aesthetics.
+4. **Step Functions sufficiency.** Whether ASL expresses the approval and compensation
    workflows comfortably, or whether Temporal Cloud becomes worth the move.
+5. **Whether a shared ALB is ever needed.** Both applications front on CloudFront. It may
+   simply never be justified.
 6. **When prod graduates to its own account.** Trigger: real user data, a paying customer,
-   or anything where a dev mistake destroying prod would be genuinely costly.
+   or anything where a dev mistake destroying prod would be genuinely costly. NewNotams
+   already stores real user accounts, so this may arrive sooner than expected.
 7. **Whether a Kubernetes spike is needed at all.** Purely a function of target-role
    keyword requirements, not of platform need.
 
+**Resolved since the original design:** which application drives the platform (NewNotams),
+what gets deployed first (the personal site, as the smallest end-to-end pipeline proof), and
+whether RDS belongs in Phase 1 (no).
+
 ---
 
-## 10. The summary worth remembering
+## 11. The summary worth remembering
 
 The original plan's expensive items — EKS, four VPCs, NAT Gateways, self-hosted LGTM,
 self-hosted Temporal, eight MCP servers — are the least differentiating things in it.
