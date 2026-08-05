@@ -18,18 +18,20 @@ Nothing is built yet. This repo currently holds the design review, decisions, an
 
 | Path | Purpose |
 | --- | --- |
+| **`docs/architecture/overview.md`** | **Start here. The complete reference.** |
 | `docs/cost/cost-model.md` | AWS unit costs, avoidances, and traps |
-| `docs/architecture/review.md` | Critique of the original design handoff |
 | `docs/architecture/roadmap.md` | Phased build plan with exit criteria |
+| `docs/architecture/review.md` | Critique of the original design handoff |
 | `docs/decisions/0001` | Two-account organization, structured for growth |
 | `docs/decisions/0002` | Single dual-stack VPC, zero NAT, zero TGW |
 | `docs/decisions/0003` | Serverless + containers, Kubernetes dropped |
-| `docs/decisions/0004` | Single monorepo |
+| `docs/decisions/0004` | Single monorepo, enforced internal layering |
 | `docs/decisions/0005` | AI automation boundary and approval gates |
 
 ## Reading order
 
-1. `docs/cost/cost-model.md` — the numbers drive every decision
-2. `docs/decisions/` — the commitments
+1. `docs/architecture/overview.md` — everything, in one read
+2. `docs/decisions/` — the full reasoning behind each commitment
 3. `docs/architecture/roadmap.md` — execution order
-4. `docs/architecture/review.md` — background critique
+4. `docs/cost/cost-model.md` — the numbers
+5. `docs/architecture/review.md` — background critique of the original design
