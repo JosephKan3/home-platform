@@ -5,18 +5,31 @@ platform-engineering artifact and a future startup substrate.
 
 Nothing is built yet. This repo currently holds the design review, decisions, and roadmap.
 
+## Shape
+
+- **2 AWS accounts** — management + one workload account. OUs structured for more.
+- **1 VPC**, dual-stack, 2 AZs, public + isolated subnets only.
+- **No NAT Gateway, no NAT instance, no Transit Gateway.** IGW, Egress-only IGW, gateway
+  endpoints, and VPC-less Lambda instead. Enforced by SCP.
+- **No Kubernetes.** Lambda by default, ECS Fargate when Lambda doesn't fit.
+- **Steady-state target: under $80/mo.**
+
 ## Contents
 
 | Path | Purpose |
 | --- | --- |
-| `docs/architecture/review.md` | Critique of the initial design handoff |
+| `docs/cost/cost-model.md` | AWS unit costs, avoidances, and traps |
+| `docs/architecture/review.md` | Critique of the original design handoff |
 | `docs/architecture/roadmap.md` | Phased build plan with exit criteria |
-| `docs/cost/cost-model.md` | Real AWS unit costs and traps |
-| `docs/decisions/` | ADRs answering the open architectural questions |
+| `docs/decisions/0001` | Two-account organization, structured for growth |
+| `docs/decisions/0002` | Single dual-stack VPC, zero NAT, zero TGW |
+| `docs/decisions/0003` | Serverless + containers, Kubernetes dropped |
+| `docs/decisions/0004` | Single monorepo |
+| `docs/decisions/0005` | AI automation boundary and approval gates |
 
 ## Reading order
 
-1. `docs/cost/cost-model.md` — the numbers drive most decisions
-2. `docs/architecture/review.md` — what to keep, change, drop
-3. `docs/decisions/` — the resulting commitments
-4. `docs/architecture/roadmap.md` — execution order
+1. `docs/cost/cost-model.md` — the numbers drive every decision
+2. `docs/decisions/` — the commitments
+3. `docs/architecture/roadmap.md` — execution order
+4. `docs/architecture/review.md` — background critique

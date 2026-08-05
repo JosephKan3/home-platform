@@ -1,7 +1,8 @@
-# ADR-0005: AI operates through a Temporal-backed Platform API with approval gates
+# ADR-0005: AI operates through a durable-workflow Platform API with approval gates
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-05
+- Revised: Step Functions replaces Temporal as the initial workflow engine (ADR-0003)
 
 ## Context
 
@@ -26,19 +27,27 @@ read-write database MCP in that same context is an injection-to-RCE path.
 | --- | --- | --- |
 | Read | logs, metrics, deployment status, git history | Read-only IAM. Unrestricted agent use. |
 | Propose | open PR, draft manifest change, file issue | Writes to git only. Never touches AWS. Human merges. |
-| Act | deploy, rollback, restart, scale | Temporal workflow + approval signal + scoped role + audit. |
+| Act | deploy, rollback, restart, scale | Durable workflow + approval gate + scoped role + audit. |
 
-**Every mutating operation is a Temporal workflow**, not a synchronous handler:
+**Every mutating operation is a durable workflow**, not a synchronous handler. The engine is
+**AWS Step Functions** (see ADR-0003); Temporal remains the upgrade path if workflow
+complexity outgrows it. The required properties are engine-independent:
 
-- Durable execution with free retries and a permanent, queryable audit trail.
-- Human approval implemented as a Temporal signal — the workflow blocks on a Slack or
-  GitHub interaction before proceeding, with a timeout that defaults to abort.
-- Compensating activities give real rollback, not best-effort cleanup.
-- A global kill switch: every workflow checks an SSM parameter before its first activity.
+- Durable execution with built-in retries and a permanent, queryable execution history.
+- Human approval implemented as a **`waitForTaskToken` state** — the execution blocks until
+  a Slack or GitHub interaction posts the token back, with a `HeartbeatSeconds` timeout that
+  defaults to abort.
+- `Catch` blocks invoking compensating states give real rollback, not best-effort cleanup.
+- A global kill switch: every workflow reads an SSM parameter as its first state and fails
+  closed if it is set.
+- Execution history is retained and queryable, which is the audit trail.
 
 **Least privilege per operation.** The Platform API holds no standing AWS power. Each
-activity assumes a narrowly scoped role (`deploy-newnotams-dev`, `restart-service-prod`)
-scoped by resource tag. No god role.
+workflow step assumes a narrowly scoped role (`deploy-newnotams-dev`, `restart-service-prod`)
+scoped by resource tag. No god role. Because dev and prod share one account (ADR-0001), these
+roles carry a permissions boundary with an explicit `Deny` on `aws:ResourceTag/env = prod`
+for anything dev-scoped — this is the mechanism that makes the single-account compromise
+survivable under automation.
 
 **Prod mutations always require human approval.** Dev may auto-approve non-destructive
 operations. Destructive operations (delete, scale-to-zero, DB modification) always require
@@ -65,8 +74,15 @@ retained, and dashboarded.
 
 ## Consequences
 
-- Temporal becomes a hard dependency of the Platform API. Start on Temporal Cloud's free
-  tier or a single-container dev server; self-host in Phase 3 if at all.
+- Step Functions is serverless: no workers, no cluster, no idle cost. Pay per state
+  transition, which at this volume is cents.
+- Step Functions' ASL is more awkward than Temporal's code-as-workflow, and long-running
+  human approvals are capped by task-token timeouts (max 1 year, ample here). If workflow
+  authoring becomes the bottleneck, migrate to Temporal Cloud — the trust tiers, scoped
+  roles, approval gates, and audit requirements above are unchanged by that swap.
 - Every new operation costs more to build than a plain endpoint would. This is the point.
 - Approval fatigue is a real risk. Tune by keeping the read and propose tiers wide and
   frictionless, so approvals stay rare and meaningful.
+- Because dev and prod share an account, the permissions-boundary discipline is doing work
+  that an account boundary would otherwise do for free. Verify it with an explicit CI test
+  that asserts a dev role is denied a prod-tagged action.

@@ -1,107 +1,129 @@
 # Roadmap
 
-Each phase has explicit exit criteria. Do not start a phase until the previous phase's
-criteria are met and its idle cost has been verified over two billing cycles.
+Two accounts, one VPC, no NAT, no Kubernetes. Each phase has exit criteria; don't start a
+phase until the previous one's criteria are met and its idle cost is verified over a full
+billing cycle.
 
 ---
 
-## Phase 0 — Foundation
+## Phase 0 — Organization and foundation
 
-**Budget: $5-15/mo**
+**Budget: $3-8/mo**
 
-The only manual work in the entire project happens here, and it should be a short,
-documented list.
+The only manual work in the project happens here. Keep the list short and documented.
 
-- [ ] Register domain. Route53 public hosted zone in Shared-Services.
-- [ ] Create AWS Organization from the management account. MFA on root, then lock it away.
-- [ ] Create accounts: Security, Shared-Services, Dev, Prod, Sandbox.
-- [ ] IAM Identity Center: permission sets, no IAM users, no access keys anywhere.
-- [ ] Org CloudTrail → Security account S3 bucket. GuardDuty delegated admin. Security Hub.
-- [ ] SCPs: region lock, deny leaving org, deny disabling CloudTrail/GuardDuty,
-      deny expensive instance families outside Prod, Sandbox restrictions.
-- [ ] AWS Budgets per account with 50/80/100% actual + 100% forecast alerts. Cost Anomaly Detection.
-- [ ] Activate cost allocation tags: `app`, `env`, `owner`, `cost-center`.
-- [ ] `cdk bootstrap` every account, trusting the deployment account.
-- [ ] GitHub OIDC provider + per-account roles. `sub` scoped to `repo:ORG/REPO:environment:*`.
-      Separate read-only plan role from apply role.
+- [ ] Register domain. Route53 public hosted zone.
+- [ ] Create AWS Organization from the management account. Root user MFA'd, then locked away.
+- [ ] OUs: `Security` (empty), `Workloads`, `Sandbox` (empty). Create the **Platform**
+      account in `Workloads`. Declaratively, via `AWS::Organizations::Account` in CDK.
+- [ ] IAM Identity Center. Permission sets for admin and read-only. No IAM users, no access keys.
+- [ ] Org CloudTrail → S3 in the management account. GuardDuty on the Platform account.
+- [ ] SCPs on OUs (not accounts, so future accounts inherit):
+      region lock; deny NAT Gateway; deny Transit Gateway; deny large/GPU instance families;
+      deny IAM user creation; deny disabling CloudTrail/GuardDuty; deny leaving the org.
+- [ ] Budgets + Cost Anomaly Detection on the Platform account.
+- [ ] Activate cost allocation tags `app`, `env`, `owner`. With one account these *are* the
+      billing breakdown.
+- [ ] `cdk bootstrap` both accounts. Management trusts itself; Platform trusts the deploy role.
+- [ ] GitHub OIDC provider + two roles: `deploy-dev` and `deploy-prod`.
+      `sub` scoped to `repo:ORG/REPO:environment:*`. Prod role behind a GitHub Environment
+      with required reviewers. Dev role carries a permissions boundary denying
+      `aws:ResourceTag/env = prod`.
 - [ ] Monorepo scaffold: pnpm workspaces, Turborepo, CDK app, jest, eslint, cdk-nag, Renovate.
-- [ ] CI: lint → test → `cdk synth` → cdk-nag → diff on PR, deploy on merge.
-- [ ] Tagging Aspect + log-retention Aspect applied globally in CDK.
-- [ ] Deploy the portfolio site: S3 + CloudFront + OAC + ACM. First real thing shipped.
+- [ ] CDK Aspects: enforce tags, enforce log retention. Fail synth, not deploy.
+- [ ] CI: lint → test → synth → cdk-nag → diff on PR; deploy on merge to `main`.
+- [ ] Ship the portfolio site: S3 + CloudFront + OAC + ACM. First real thing deployed.
 
-**Exit criteria:** a commit to `main` deploys to Prod with no human touching the console.
-Monthly bill under $15. Budget alerts have fired at least once in testing.
-
----
-
-## Phase 1 — Private access, data, and the first real service
-
-**Budget: $45-75/mo**
-
-- [ ] VPC construct: dual-stack, 3 AZ, public/private/isolated, gateway endpoints for S3+DynamoDB.
-- [ ] Egress: `fck-nat` instance in Dev, single-AZ NAT GW in Prod. Egress-only IGW for IPv6.
-- [ ] Tailscale subnet router on `t4g.nano` in Shared-Services. Advertise all VPC CIDRs.
-      ACLs by tag. Tailscale SSH. **Close all public SSH and DB ports permanently.**
-- [ ] Private hosted zone `internal.example.com`. Cross-account zone association or delegation.
-- [ ] Shared RDS Postgres `t4g.micro` in Dev isolated subnets. pgvector extension.
-      Database + role per app. PITR on. Secrets Manager with rotation Lambda.
-- [ ] AWS Backup plan. Cross-account copy to the Security account vault.
-      **Perform and document a real restore. Record measured RTO/RPO.**
-- [ ] OTel instrumentation in every service from the first line of code.
-      Export to Grafana Cloud free tier. CloudWatch for AWS-native metrics.
-- [ ] Define SLIs and SLOs for the first real service. Multi-window burn-rate alerts.
-- [ ] Ship the first real application on Lambda or ECS Fargate. End to end: build → image →
-      ECR → deploy → smoke test → dashboard → alerts → runbook.
-- [ ] `runbooks/` directory with genuine procedures for the top 5 plausible failures.
-
-**Exit criteria:** a real application is serving traffic with an SLO and burn-rate alerts.
-A database restore has been performed and timed. No public ingress except CloudFront/ALB.
-Two clean billing cycles.
+**Exit criteria:** a merge to `main` deploys to production with nobody touching the console.
+Bill under $8. Budget alert has fired at least once in testing. A CI test proves the dev
+role is denied a prod-tagged action.
 
 ---
 
-## Phase 2 — Kubernetes, GitOps, and identity
+## Phase 1 — Network, private access, data
 
-**Budget: $180-260/mo**
+**Budget: $20-35/mo**
 
-Only if Phase 1 has been stable for two billing cycles and there are two services that
-concretely benefit.
+- [ ] VPC construct: `10.20.0.0/16`, dual-stack, 2 AZs, **public + isolated subnets only**.
+      No `PRIVATE_WITH_EGRESS` anywhere — it silently creates NAT Gateways.
+- [ ] IGW + Egress-only IGW. Gateway endpoints for S3 and DynamoDB. Zero interface endpoints.
+- [ ] **Verify IPv6 egress works** for each real dependency before relying on it.
+      Known IPv4-only: Docker Hub, `git clone` from github.com. Document the results in
+      `docs/architecture/ipv6-coverage.md` as they're tested.
+- [ ] Tailscale subnet router on `t4g.nano`, public subnet, advertising `10.20.0.0/16`.
+      Tailscale SSH, ACLs by tag. **Close all public SSH and DB ports permanently.**
+- [ ] Private hosted zone `internal.example.com`.
+- [ ] RDS Postgres `t4g.micro`, isolated subnet, no public access, pgvector enabled.
+      Database + role per app. PITR on. Credentials in Secrets Manager with rotation.
+- [ ] AWS Backup plan. **Perform and document a real restore. Record measured RTO/RPO.**
+- [ ] OTel instrumentation from the first line of service code. CloudWatch for AWS metrics.
+- [ ] First real application on **Lambda** (no VPC attachment unless it needs RDS).
+      End to end: build → deploy → smoke test → dashboard → alarms → runbook.
+- [ ] SLIs and SLOs for that service. Multi-window burn-rate alerts.
+- [ ] `runbooks/` with real procedures for the top 5 plausible failures.
 
-- [ ] EKS in Dev. Karpenter, spot + graviton. Minimal on-demand baseline for system pods.
-- [ ] AWS Load Balancer Controller. One shared ALB, host-based Ingress. External DNS.
-- [ ] EKS Pod Identity for per-workload IAM. cert-manager. Kyverno or OPA Gatekeeper.
-- [ ] ArgoCD in Dev, private-only via Tailscale. App-of-apps from the GitOps repo.
-- [ ] Authentik. OIDC for ArgoCD, Grafana, and every internal tool. No local accounts anywhere.
-- [ ] Migrate one Fargate service to EKS. Write up the comparison — that's the artifact.
-- [ ] Argo Rollouts: canary with automated rollback on SLO burn. **Highest-signal item here.**
-- [ ] Supply chain: cosign signing, SBOM generation, ECR scan-on-push, Renovate automerge for patches.
-- [ ] Prod cluster only once Dev has been stable for a month.
-
-**Exit criteria:** application deploys are fully GitOps-driven. A canary has automatically
-rolled back on a deliberately injected SLO violation. All internal tools behind SSO + Tailscale.
+**Exit criteria:** a real app serves traffic with an SLO and burn-rate alerts. A database
+restore has been performed and timed. No public ingress except CloudFront. No NAT Gateway
+exists. One clean billing cycle.
 
 ---
 
-## Phase 3 — Platform API, AI automation, workflows
+## Phase 2 — Containers, progressive delivery, identity
 
-**Budget: $300+/mo**
+**Budget: $50-80/mo**
 
-- [ ] Temporal. Temporal Cloud free tier first; self-host only if the operational experience
-      is itself the goal.
-- [ ] Platform API. Every mutating operation is a workflow. Scoped role per activity.
-      Approval signals. Kill switch. Structured audit events.
-- [ ] `platform-mcp` server wrapping the Platform API. Read-only GitHub + CloudWatch MCP alongside.
-- [ ] Deploy Bot GitHub App: PR previews, deploy status, `/deploy` and `/rollback` commands
-      routed through the Platform API with approval gates.
-- [ ] `platform new-service` CLI: scaffolds repo + CDK stack + pipeline + dashboard + alerts
-      + runbook + SLO. The paved road. **This is the flagship platform-engineering deliverable.**
-- [ ] Self-hosted LGTM stack, only if you specifically want the operational experience.
-- [ ] Qdrant, only if pgvector demonstrably falls over.
+- [ ] One shared ALB. Host- and path-based listener rules across all services.
+- [ ] ECS Fargate cluster (no EC2 capacity). ARM tasks. Spot in dev.
+      Public subnet + security group with inbound **only** from the ALB's SG.
+- [ ] **CodeDeploy progressive delivery** — canary/linear traffic shifting with automatic
+      rollback on CloudWatch alarm, for both Lambda and ECS. Prove it: deliberately break
+      a deploy and show the automatic rollback. **Highest-signal item in the whole roadmap.**
+- [ ] Authentik on a single Fargate task, private-only via Tailscale.
+      OIDC for every internal tool. No local accounts anywhere.
+- [ ] Grafana Cloud free tier as the OTel backend. Dashboards + SLO alerts.
+- [ ] Supply chain: cosign image signing, SBOM generation, ECR scan-on-push,
+      Renovate automerge for patch updates.
+- [ ] cdk-nag blocking in CI with documented, justified suppressions.
+- [ ] CloudFormation drift detection on a schedule — the substitute for a GitOps reconcile loop.
+
+**Exit criteria:** a canary deploy has automatically rolled back on an injected failure.
+All internal tools behind SSO + Tailscale. Container images signed and scanned.
+
+---
+
+## Phase 3 — Platform API and AI automation
+
+**Budget: $70-110/mo**
+
+- [ ] Platform API. Every mutating operation is a **Step Functions** execution:
+      scoped role per step, `waitForTaskToken` approval gates, SSM kill switch,
+      structured audit events. See ADR-0005.
+- [ ] `platform-mcp` server wrapping the Platform API. Read-only GitHub + CloudWatch MCP
+      alongside. **No filesystem, Docker, or DB-write MCP in any agent context that reads
+      third-party text.**
+- [ ] Deploy Bot GitHub App: PR previews, deploy status, `/deploy` and `/rollback` routed
+      through the Platform API with approval gates.
+- [ ] `platform new-service` CLI — scaffolds service + CDK stack + pipeline + dashboard +
+      alarms + runbook + SLO in one command. **The flagship platform-engineering deliverable.**
 - [ ] FIS chaos experiment: kill an AZ, show the SLO dashboard responding.
+- [ ] Temporal only if Step Functions demonstrably can't express the workflows.
+- [ ] Qdrant only if pgvector demonstrably falls over.
 
-**Exit criteria:** a new service goes from zero to production with observability, alerts,
-and a runbook via one CLI command. AI-initiated production changes are gated, audited, and
-reversible.
+**Exit criteria:** a new service goes zero-to-production with observability, alarms, and a
+runbook via one CLI command. AI-initiated production changes are gated, audited, reversible.
+
+---
+
+## Explicitly out of scope
+
+Recorded so the reasoning survives, per ADR-0003:
+
+- **Kubernetes / EKS / Helm / ArgoCD / Karpenter.** ~$200/mo for workloads that fit in
+  Lambda and Fargate. Everything stays containerized so the option remains open.
+- **NAT Gateways and NAT instances.** SCP-denied. IGW + EIGW + no-VPC-Lambda instead.
+- **Transit Gateway.** One VPC. Future VPCs peer.
+- **Self-hosted LGTM stack.** Grafana Cloud free tier.
+- **Separate GitOps manifest repo.** No manifests exist.
 
 ---
 
@@ -109,7 +131,8 @@ reversible.
 
 - Write an ADR for every non-obvious decision. The ADR log is the highest-value artifact here.
 - Keep one architecture diagram current. Most reviewers will see only this.
-- Write publicly about tradeoffs — especially the ones where you chose the cheaper option
-  and can explain exactly what you gave up.
-- Review the bill weekly for the first two months, then monthly.
-- Maintain a teardown runbook per phase. Anything you cannot cheaply destroy, do not build.
+- Write publicly about the tradeoffs — especially where the cheaper option was chosen and
+  you can say precisely what was given up. "$80/mo, and here's what that cost me" is a
+  stronger story than a $300/mo cluster.
+- Review the bill weekly for two months, then monthly.
+- Maintain a teardown runbook per phase.

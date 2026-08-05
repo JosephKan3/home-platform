@@ -1,87 +1,96 @@
 # Cost Model
 
-Prices are us-east-1 on-demand, rounded, as of design time. Verify before committing.
-Everything here assumes a single region and low traffic (< 100 GB/mo egress).
+us-east-1 on-demand, rounded, as of design time. Verify before committing.
+Assumes one region, one workload account, low traffic (< 100 GB/mo egress).
 
-## The line items that actually matter
+## Prices that drive decisions
 
-| Item | Unit price | Monthly | Notes |
+| Item | Unit price | Monthly | Status |
 | --- | --- | --- | --- |
-| EKS control plane | $0.10/hr | **$73** | Per cluster. Flat. Unavoidable. |
-| NAT Gateway | $0.045/hr + $0.045/GB | **$33+** | Per AZ. The classic homelab bill killer. |
-| ALB | $0.0225/hr + LCU | **$17-22** | Per load balancer. |
-| NLB | $0.0225/hr + NLCU | **$17-22** | Same order. |
-| Interface VPC endpoint | $0.01/hr/AZ + $0.01/GB | **$7.30/AZ** | Per endpoint, per AZ. |
-| Gateway VPC endpoint (S3, DynamoDB) | $0 | **$0** | Always use these. |
-| Transit Gateway attachment | $0.05/hr | **$36** | Per attachment, plus $0.02/GB. |
-| VPC peering | $0 | **$0** | Cross-AZ data $0.01/GB each way. |
-| VPC itself | $0 | **$0** | Correct in the handoff. |
-| Egress-only IGW (IPv6) | $0 | **$0** | The cheapest outbound path that exists. |
-| RDS Postgres `db.t4g.micro` | $0.016/hr | **$12** | + $0.115/GB gp3. Multi-AZ doubles it. |
-| ElastiCache `cache.t4g.micro` | $0.016/hr | **$12** | Valkey is ~20% cheaper than Redis OSS. |
-| EC2 `t4g.nano` | $0.0042/hr | **$3** | Fine for a NAT instance or subnet router. |
-| EC2 `t4g.small` | $0.0168/hr | **$12** | |
-| EC2 `t4g.large` | $0.0672/hr | **$49** | ~$30 on 1-yr compute savings plan. |
-| Fargate | $0.04048/vCPU-hr + $0.004445/GB-hr | **$12/0.25vCPU+0.5GB** | ARM is ~20% cheaper. |
-| Route53 hosted zone | $0.50 | **$0.50** | Queries are negligible. |
-| Secrets Manager secret | $0.40 | **$0.40** | Per secret. SSM SecureString is $0. |
-| CloudWatch Logs ingest | $0.50/GB | varies | **Default retention is "never expire".** |
-| ACM public cert | $0 | **$0** | |
-| ACM Private CA | $400/mo | **$400** | Never do this. Use step-ca or cert-manager. |
-| AWS Config | $0.003/item | creeps | Enable selectively. |
-| GuardDuty | ~$4-15 | **$5-15** | Worth it. Enable. |
+| VPC, subnets, route tables, security groups | $0 | **$0** | Using |
+| Internet Gateway | $0 | **$0** | Using |
+| Egress-only Internet Gateway (IPv6) | $0 | **$0** | Using |
+| Gateway VPC endpoint (S3, DynamoDB) | $0 | **$0** | Using |
+| VPC peering (connection) | $0 | **$0** | Reserved for future |
+| AWS Organizations, accounts, SCPs, Identity Center | $0 | **$0** | Using |
+| ACM public certificate | $0 | **$0** | Using |
+| **Public IPv4 address** | $0.005/hr | **$3.60 each** | The no-NAT trap |
+| NAT Gateway | $0.045/hr + $0.045/GB | ~$33 | **SCP-denied** |
+| Transit Gateway attachment | $0.05/hr + $0.02/GB | ~$36 | **SCP-denied** |
+| EKS control plane | $0.10/hr | ~$73 | **Dropped (ADR-0003)** |
+| ACM Private CA | — | $400 | Never |
+| Interface VPC endpoint | $0.01/hr/AZ | $7.30/AZ each | Avoid; case-by-case |
+| ALB | $0.0225/hr + LCU | **$17-22** | One, shared |
+| Route53 hosted zone | $0.50 | **$0.50** | |
+| Lambda | $0.20/M req + $0.0000133/GB-s | **~$0-2** | 1M req + 400k GB-s free forever |
+| Fargate ARM | $0.03238/vCPU-hr + $0.00356/GB-hr | **~$10** per 0.25vCPU/0.5GB task | |
+| Fargate Spot | ~70% off | **~$3** per small task | Dev default |
+| RDS `db.t4g.micro` | $0.016/hr | **$12** | + $0.115/GB gp3. Free tier 12mo. |
+| ElastiCache Valkey `t4g.micro` | ~$0.013/hr | **$9** | Defer; use Lambda memory or DynamoDB |
+| EC2 `t4g.nano` | $0.0042/hr | **$3** | Tailscale router |
+| S3 | $0.023/GB | **~$1** | |
+| CloudFront | $0.085/GB out | **~$1** | 1 TB/mo free tier |
+| DynamoDB on-demand | $1.25/M writes | **~$0-1** | 25 GB free |
+| Step Functions Standard | $0.025/1k transitions | **~$0-1** | 4k free/mo |
+| Secrets Manager | $0.40/secret | **$0.40 each** | Use SSM SecureString ($0) unless rotating |
+| CloudWatch Logs ingest | $0.50/GB | varies | **Default retention is "never expire"** |
+| GuardDuty | usage-based | **$3-10** | One account only. Keep on. |
+| Grafana Cloud free tier | $0 | **$0** | 10k series, 50 GB logs, 50 GB traces |
 
-## Correcting the handoff's cost assumptions
+## The three big avoidances
 
-**"Use VPC Endpoints instead of NAT Gateways to save money" is wrong at this scale.**
-A NAT Gateway is $33/mo. Five interface endpoints across two AZs is $73/mo — more than
-double, and it still doesn't cover arbitrary internet egress (GitHub, Docker Hub, npm,
-Anthropic/OpenAI APIs, Tailscale coordination). Endpoints only win at high data volume,
-where the $0.045/GB NAT processing fee dominates. You will not hit that.
+**NAT Gateway → IGW + EIGW + no-VPC Lambda.** Saves $33/mo. Replacement cost is $3.60/mo
+per always-on public-IPv4 Fargate task, or $0 if the task is IPv6-only. See ADR-0002 for
+the four egress strategies and the IPv6 coverage caveats.
 
-Cheapest-to-most-expensive egress, in order:
+**Transit Gateway → single VPC.** Saves $36/mo per attachment. Only one VPC exists, so
+there is nothing to connect. Future VPCs peer (free) rather than attach.
 
-1. **No egress.** Put workloads in isolated subnets; use gateway endpoints for S3/DynamoDB.
-2. **Egress-only Internet Gateway over IPv6.** Free. Works for any IPv6-capable destination.
-   AWS APIs are increasingly dualstack. Pair with DNS64/NAT64 if you must reach IPv4-only
-   destinations — but NAT64 requires a NAT Gateway, so this only helps for pure-IPv6 paths.
-3. **NAT instance.** `t4g.nano` in an ASG of 1, ~$3/mo. Use the `fck-nat` AMI. ~5 Gbps.
-   Acceptable SPOF for this platform. This is the right default.
-4. **Single-AZ NAT Gateway.** $33/mo. Buy this when you want to stop thinking about it.
-5. **Multi-AZ NAT Gateway.** $66+/mo. Never, unless something is actually production-critical.
+**EKS → Lambda + Fargate.** Saves ~$73/mo control plane plus nodes, and removes the
+operational surface of ArgoCD/Karpenter/controllers. See ADR-0003 for the capability-by-
+capability replacement table.
 
-**Multi-VPC is not free.** VPCs are free; *connecting* them is not. Four bounded-context
-VPCs needing full mesh connectivity via Transit Gateway = 4 × $36 = **$144/mo before any
-traffic**. Peering avoids that fee but is non-transitive and hits a 125-peering limit /
-route-table sprawl. Every app in the Public Applications VPC reaching Postgres in the Shared
-Services VPC also pays $0.01-0.02/GB each way.
+Combined: roughly **$140-200/mo avoided** against the original design.
 
-**Account boundaries are free. Network boundaries are not.** This is the single most
-important cost fact for this design. See ADR-0002.
+## Remaining traps
 
-## Budget tiers
+- **Public IPv4 at $3.60/mo per address.** The direct consequence of no-NAT. Cheap next to
+  a NAT Gateway, but it scales with always-on task count. Prefer Lambda; prefer IPv6-only.
+- **Two accounts, one GuardDuty.** Correct — enabling it per-account multiplies cost. The
+  management account has no workloads, so findings there should be near-zero.
+- **CloudWatch Logs default retention is infinite.** Enforce 14d dev / 30d prod via a CDK
+  Aspect. This is the most common silent cost leak in any AWS account.
+- **NAT Gateway can be created accidentally.** `SubnetType.PRIVATE_WITH_EGRESS` in CDK
+  creates one per AZ without asking. The SCP denying `ec2:CreateNatGateway` is what
+  actually prevents this; synth will fail loudly instead of billing quietly.
+- **Data transfer between AZs is $0.01/GB each way.** With 2 AZs and a shared RDS, chatty
+  cross-AZ traffic adds up. Keep compute and its database AZ-aligned where it's free to do so.
+- **AWS Config** is not enabled by default here. Leave it off until there's a reason; its
+  per-item recording charges creep.
 
-| Phase | Monthly target | What runs |
+## Budget by phase
+
+| Phase | Target | What runs |
 | --- | --- | --- |
-| 0 — Foundation | **$5-15** | Org, SSO, Route53, S3/CloudFront, Lambda, Tailscale, GitHub OIDC |
-| 1 — Services | **$45-75** | + NAT instance, RDS t4g.micro, internal ALB, ECS Fargate, Grafana Cloud free tier |
-| 2 — Kubernetes | **$180-260** | + EKS ($73), 2× t4g.medium nodes or Karpenter spot, public ALB, ArgoCD, Authentik |
-| 3 — Advanced | **$300+** | + Temporal, self-hosted LGTM stack, GPU workers, Qdrant |
+| 0 — Foundation | **$3-8** | Org, 2 accounts, SCPs, Identity Center, Route53, S3+CloudFront, GitHub OIDC, GuardDuty |
+| 1 — Network + first service | **$20-35** | + VPC (free), Tailscale `t4g.nano`, RDS t4g.micro, Lambda, CloudWatch |
+| 2 — Containers + platform services | **$50-80** | + shared ALB, 2-3 Fargate tasks, Authentik, CodeDeploy, Grafana Cloud free |
+| 3 — Automation | **$70-110** | + Platform API, Step Functions, MCP server, deploy bot, more Fargate |
 
-Do not enter a phase until the previous one has been stable and idle-cost-verified for
-two full billing cycles.
+Steady state target: **under $80/mo**. That is a defensible number to state publicly and a
+better story than a $300/mo cluster.
 
-## Guardrails (build these in Phase 0, not later)
+## Guardrails (Phase 0, not later)
 
-- AWS Budgets: monthly budget with 50/80/100% actual and 100% forecast alerts to email + SNS.
-- Cost Anomaly Detection: one monitor per linked account.
-- Service Control Policy: deny all regions except your chosen one + `us-east-1` for global
-  services. This alone prevents most surprise bills and crypto-mining blast radius.
-- SCP: deny `ec2:RunInstances` for instance families you'll never use (p*, g*, x*, u-*, *metal).
-- SCP: deny `organizations:LeaveOrganization`, deny disabling CloudTrail/GuardDuty.
-- CloudWatch log group retention: default 14 days dev / 30 days prod, enforced by an
-  Aspect in CDK. Never leave it unset.
-- S3 lifecycle rules on every bucket at creation.
-- Cost allocation tags activated day one: `app`, `env`, `owner`, `cost-center`.
-  Enforce via CDK Aspect + SCP requiring tags on create.
-- A written teardown runbook per phase. If you can't cheaply destroy it, don't build it.
+- Budgets on the Platform account: 50/80/100% actual + 100% forecast → email + SNS.
+- Cost Anomaly Detection monitor.
+- SCP: region lock to primary + `us-east-1`.
+- SCP: deny `ec2:CreateNatGateway`, `ec2:CreateTransitGateway`.
+- SCP: deny `ec2:RunInstances` for `p*`, `g*`, `x*`, `u-*`, `*.metal`, and anything above `large`.
+- SCP: deny IAM user and access key creation.
+- SCP: deny disabling CloudTrail or GuardDuty; deny leaving the organization.
+- CDK Aspect: fail synth on any log group without explicit retention.
+- CDK Aspect: fail synth on any resource missing `app`, `env`, `owner` tags.
+- S3 lifecycle rules at bucket creation, always.
+- Cost allocation tags activated day one — with one account, tags *are* the billing breakdown.
+- A teardown runbook per phase. If it can't be cheaply destroyed, don't build it.

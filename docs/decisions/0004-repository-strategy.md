@@ -1,7 +1,8 @@
-# ADR-0004: Monorepo plus a separate GitOps manifest repo
+# ADR-0004: Single monorepo
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-05
+- Revised: GitOps manifest repo dropped following ADR-0003 (no Kubernetes)
 
 ## Context
 
@@ -9,24 +10,27 @@ The handoff proposes a GitHub Organization with separate repos for `platform`,
 `automation`, `platform-api`, `platform-libraries`, per-application repos, and templates —
 six-plus repos before any code exists, for a single operator.
 
+An earlier version of this ADR kept a separate GitOps manifest repo for ArgoCD. ADR-0003
+dropped Kubernetes, so there are no manifests and no ArgoCD. That repo is no longer needed.
+
 ## Decision
 
-Start with **one monorepo** (pnpm workspaces + Turborepo) plus **one separate GitOps
-manifest repo**.
+**One monorepo** (pnpm workspaces + Turborepo).
 
 ```
 home-platform/
 ├── infra/
-│   ├── bootstrap/          org, SCPs, Identity Center, CDK bootstrap, OIDC roles
-│   ├── accounts/           per-account baseline: VPC, egress, DNS, logging
-│   └── platform/           cluster, shared RDS, shared Redis, ingress, observability
+│   ├── org/                Organization, OUs, SCPs, Identity Center, account definitions
+│   ├── bootstrap/          CDK bootstrap config, GitHub OIDC provider + deploy roles
+│   ├── network/            VPC, subnets, IGW, EIGW, gateway endpoints, security groups
+│   └── platform/           shared RDS, ALB, Route53, ECR, observability, Tailscale router
 ├── packages/
-│   ├── constructs/         reusable CDK L3s: Vpc, Alb, Postgres, Redis, Service, Site
-│   ├── config/             environment profiles, tagging Aspects, cdk-nag rules
+│   ├── constructs/         reusable CDK L3s: Vpc, Alb, Postgres, ServerlessApi, Site, FargateService
+│   ├── config/             dev/prod profiles, tagging Aspects, cdk-nag rules, accounts.ts
 │   ├── telemetry/          OTel setup, structured logging, SLO helpers
 │   └── sdk/                typed Platform API client
 ├── services/
-│   ├── platform-api/       Temporal-backed operations API
+│   ├── platform-api/       operations API (Step Functions backed)
 │   ├── platform-mcp/       custom MCP server fronting platform-api
 │   └── deploy-bot/         GitHub App
 ├── apps/
@@ -36,8 +40,6 @@ home-platform/
 ├── cli/                    `platform new-service` paved-road scaffolding
 ├── docs/                   ADRs, diagrams, runbooks
 └── .github/workflows/
-
-home-platform-gitops/       ArgoCD app-of-apps, Helm values, image tags (Phase 2)
 ```
 
 Split an application into its own repo only when it has a genuinely independent release
@@ -51,8 +53,8 @@ cadence or different collaborators. Document the split as an ADR when it happens
 - Turborepo affected-graph builds mean only changed projects deploy; the "monorepos are
   slow" objection doesn't apply at this scale.
 - One dependency graph, one lockfile, one Renovate config, one CI setup.
-- The GitOps repo is separate because ArgoCD conventionally expects it, and because
-  automated image-tag commits should not pollute source history or trigger source CI.
+- With no Kubernetes there is no ArgoCD write-back loop, so the original reason to separate
+  a manifest repo is gone. CDK + CloudFormation is the desired-state document.
 
 ## Consequences
 
@@ -67,5 +69,5 @@ cadence or different collaborators. Document the split as an ADR when it happens
 
 - **Polyrepo as originally proposed.** Rejected: cross-repo version coordination and no
   atomic changes, for benefits that only materialize with multiple teams.
-- **Monorepo including GitOps manifests.** Rejected: ArgoCD write-back commits create noisy
-  history and CI loops.
+- **Separate GitOps repo.** Withdrawn. Was correct while Kubernetes was in scope; ADR-0003
+  removed the manifests it would have held.

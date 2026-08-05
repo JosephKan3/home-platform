@@ -1,6 +1,12 @@
 # Design Review
 
-Review of the handoff document. Organized as: what's right, what's wrong, what's missing.
+Review of the original handoff document. Organized as: what's right, what's wrong, what's missing.
+
+> **Status note.** This document is the original critique. Three constraints were
+> subsequently adopted that revise parts of it — two accounts instead of five, no NAT and
+> no Transit Gateway, and Kubernetes dropped entirely. The ADRs in `docs/decisions/` are
+> authoritative where they differ. The "Answers to the outstanding questions" section below
+> has been updated; the critique sections above it are left as originally written.
 
 ---
 
@@ -252,61 +258,72 @@ reviewers for the prod role. Separate plan (read-only) and apply roles; PRs get 
 
 ## Answers to the outstanding questions
 
+*Updated to reflect the adopted constraints: two accounts, no NAT/TGW, no Kubernetes.*
+
 **1. Infrastructure ownership — centralized, app-owned, or hybrid?**
-Hybrid, and specifically: platform owns *account-level and network-level* resources (VPC,
-subnets, egress, cluster, DNS zones, shared observability). Apps own *everything above the
-network* (their compute, their database, their queues, their DNS records, their alarms).
-The seam is: if destroying it would break another app, platform owns it. Apps consume
-platform resources by lookup (SSM parameters / `Vpc.fromLookup`), never by cross-stack
-export, which creates undeletable dependency locks.
+Hybrid. Platform owns account-level and network-level resources (VPC, subnets, IGW/EIGW,
+gateway endpoints, shared ALB, DNS zones, shared RDS instance, observability). Apps own
+everything above the network: their Lambda/Fargate compute, their database *within* the
+shared instance, their queues, their DNS records, their alarms. The seam: if destroying it
+would break another app, platform owns it. Apps consume platform resources by **lookup**
+(SSM parameters, `Vpc.fromLookup`), never by cross-stack export — exports create
+undeletable dependency locks.
 
 **2. Networking boundaries — single, bounded-context, or per-app VPC?**
-One VPC per account per environment. Accounts are the boundary; VPCs are plumbing.
-Security groups and namespaces do the intra-VPC segmentation. See ADR-0002.
+**One VPC**, since there is one workload account. Dual-stack, 2 AZs, public + isolated
+tiers only. Security groups do all segmentation. CIDRs pre-allocated so future accounts
+peer without renumbering. See ADR-0002.
 
 **3. Kubernetes now or after a serverless phase?**
-After. Lambda + ECS Fargate in Phase 1, EKS in Phase 2. Non-negotiable prerequisite for
-Phase 2: two consecutive billing cycles at the Phase 1 budget with no surprises.
+**Neither — dropped.** Lambda by default, ECS Fargate when Lambda doesn't fit. Every EKS
+capability has a managed replacement, and progressive delivery (the one genuinely valuable
+thing Kubernetes was bringing) is fully covered by CodeDeploy. Keep everything
+containerized so the door stays open. See ADR-0003.
 
 **4. How to partition shared services across VPCs?**
-Don't partition — that's the multi-VPC problem restated. One shared Postgres instance with
-a database and role per app (separate instances only for prod-critical or compliance cases),
-one Redis/Valkey, one cluster with namespace isolation. Shared Services *account* holds
-cross-environment things: Route53 public zones, ECR, Tailscale router, CI runners.
+Moot — one VPC. One shared Postgres `t4g.micro` with a database and role per app. No Redis
+initially (use Lambda memory or DynamoDB; add ElastiCache only when a measured need
+appears). No Temporal cluster (Step Functions). No Authentik until Phase 2, then one
+Fargate task.
 
 **5. Should CDK Stages own application deployment structure?**
-Yes. `Stage` per environment per app is the right unit — it's what CDK Pipelines consumes
-and it makes "deploy app X to env Y" a single object. Inside a stage keep stacks split by
-*lifecycle*, not by layer: things that change hourly (compute, config) separate from things
-that never change (VPC, RDS). A stack you deploy 50×/day should not contain your database.
+Yes, and with one account they're doing double duty — `DevStage` and `ProdStage` are the
+primary environment separation mechanism, backed by tag-scoped IAM. Inside a stage, split
+stacks by **lifecycle**: things that change hourly (compute, config) separate from things
+that never change (VPC, RDS). A stack deployed 50×/day must not contain your database.
 
 **6. Cleanest repository structure?**
-Monorepo (pnpm + Turborepo) + a separate GitOps manifests repo. See ADR-0004.
+Single monorepo (pnpm + Turborepo). The separate GitOps repo is no longer needed — without
+Kubernetes there are no manifests, and CDK/CloudFormation is the desired-state document.
+See ADR-0004.
 
 **7. Better patterns that preserve portfolio value without cost/complexity?**
-- Multi-account org instead of multi-VPC — better boundary, $0 instead of $144/mo.
-- NAT instance instead of NAT Gateway in dev — $3 instead of $33.
-- Grafana Cloud free tier instead of self-hosted LGTM — $0 and 3 weeks saved.
-- Karpenter + spot + graviton instead of managed node groups — 60-80% off compute.
-- ECS Fargate for stateless services instead of a second cluster.
-- SSM Parameter Store instead of Secrets Manager where no rotation is needed.
+- Multi-account org with OU-attached SCPs — the enterprise boundary story at $0/mo.
+- IGW + Egress-only IGW + no-VPC Lambda instead of NAT — $0 instead of $33/mo.
+- Single VPC instead of bounded-context VPCs + TGW — $0 instead of $144/mo.
+- Lambda + Fargate + CodeDeploy instead of EKS + Karpenter + Argo Rollouts — saves ~$200/mo
+  and keeps progressive delivery intact.
+- Step Functions `waitForTaskToken` instead of self-hosted Temporal — $0 idle, same
+  durable-approval semantics.
+- Grafana Cloud free tier instead of self-hosted LGTM — $0 and weeks saved.
+- SSM Parameter Store instead of Secrets Manager where nothing rotates.
 - CloudFront + S3 (OAC) for static sites instead of any always-on compute.
-- Aurora Serverless v2 only if it can scale to 0 ACU — otherwise t4g.micro RDS is cheaper.
-- **Write about it.** A blog post series on the tradeoffs is worth more in interviews than
-  another $100/mo of running infrastructure.
+- **Write about it.** A post series on these tradeoffs is worth more in interviews than
+  another $200/mo of idle infrastructure.
 
 ---
 
 ## The uncomfortable summary
 
-The parts of this plan that cost the most money and time — EKS, four VPCs, self-hosted LGTM,
-Temporal, eight MCP servers — are the *least* differentiating. Every platform engineer has
-run EKS.
+The parts of the original plan that cost the most — EKS, four VPCs, NAT Gateways,
+self-hosted LGTM, self-hosted Temporal, eight MCP servers — are the *least* differentiating.
+Every platform engineer has run EKS.
 
-The parts that are nearly free — multi-account org with SCPs, an ADR log, a paved-road
-scaffolding CLI, SLOs with burn-rate alerts, a tested restore runbook, progressive delivery
-with automated rollback, a custom MCP server fronting a Temporal-backed Platform API with
-human approval gates — are what almost nobody has.
+The parts that are nearly free — a multi-account org with OU-attached SCPs, an ADR log, a
+paved-road scaffolding CLI, SLOs with burn-rate alerts, a tested restore with a measured
+RTO, canary deploys with automated rollback, and a custom MCP server fronting a
+durable-workflow Platform API with human approval gates — are what almost nobody has.
 
-Spend your budget on the second list. Build the first list slowly, and only in service of a
-real application.
+The adopted constraints push directly toward the second list. A platform running at
+**$80/mo with a written explanation of every cost decision** is a stronger portfolio
+artifact than a $300/mo cluster, because the explanation is the skill.
