@@ -12,9 +12,19 @@ billing cycle.
 
 The only manual work in the project happens here. Keep the list short and documented.
 
-- [ ] **Register the platform domain in Route53** (`<yourname>.com`, ~$14/yr). Manual, once.
-      Create the `newnotams.net` hosted zone and delegate its NS from the current registrar —
-      delegate, don't transfer. See ADR-0006.
+- [ ] **Delegate `josephkan.ca` DNS to Route53.** No registration needed — it's already owned
+      at GoDaddy. Sequence matters, since the personal site is live on Vercel (ADR-0006):
+      1. Create the Route53 public hosted zone and replicate the **existing Vercel records**
+         (`josephkan.ca A 76.76.21.21`, `www CNAME cname.vercel-dns.com`).
+      2. Verify against the Route53 nameservers directly with
+         `Resolve-DnsName josephkan.ca -Server <ns-xxx.awsdns-xx.com>`.
+      3. Lower TTLs at GoDaddy to 300s; wait for the old TTL to expire.
+      4. Change nameservers at GoDaddy. **This is a no-op** — zone contents are identical,
+         so the site never goes down. `.ca` registry propagation takes 24-48h.
+      5. Verify delegation everywhere before proceeding.
+      Confirm auto-renew and transfer lock are on at GoDaddy while you're there.
+- [ ] ACM certificate in **`us-east-1`** (required for CloudFront regardless of primary
+      region) covering `josephkan.ca` and `*.josephkan.ca`. DNS-validated via CDK.
 - [ ] Create AWS Organization from the management account. Root user MFA'd, then locked away.
 - [ ] OUs: `Security` (empty), `Workloads`, `Sandbox` (empty). Create the **Platform**
       account in `Workloads`. Declaratively, via `AWS::Organizations::Account` in CDK.
@@ -46,10 +56,17 @@ The only manual work in the project happens here. Keep the list short and docume
       Replace the two OANDA API routes with an **EventBridge-scheduled Lambda that writes
       JSON to S3** — removes all request-path compute, keeps the OANDA token off any
       internet-reachable surface, and survives OANDA outages. See `applications.md`.
+- [ ] **Cut the apex over to CloudFront.** Replace the `A 76.76.21.21` record with a Route53
+      **ALIAS** to the distribution, and `www` with a redirect to the apex. Single record
+      change, 300s TTL, fully in CDK. **The highest-risk moment in Phase 0** — deliberately
+      isolated so it reverts in five minutes without touching nameservers.
+- [ ] Add a `v=DMARC1; p=reject;` TXT record. No mail is sent from this domain, which is
+      exactly why it should be unspoofable. Costs nothing.
 
-**Exit criteria:** a merge to `main` deploys the personal site to production with nobody
-touching the console. Bill under $8. Budget alert has fired at least once in testing. A CI
-test proves the dev role is denied a prod-tagged action.
+**Exit criteria:** a merge to `main` deploys the personal site to production at
+`josephkan.ca` with nobody touching the console. Vercel is switched off for the personal
+site. Bill under $8. Budget alert has fired at least once in testing. A CI test proves the
+dev role is denied a prod-tagged action.
 
 ---
 
@@ -83,7 +100,13 @@ test proves the dev role is denied a prod-tagged action.
       `git clone` from github.com. Record results in `docs/architecture/ipv6-coverage.md`.
 - [ ] Tailscale subnet router on `t4g.nano`, public subnet, advertising `10.20.0.0/16`.
       Tailscale SSH, ACLs by tag. **Close all public SSH and DB ports permanently.**
-- [ ] Private hosted zone `internal.<domain>`.
+- [ ] Private hosted zone `internal.josephkan.ca`, attached to the VPC.
+- [ ] **Configure Tailscale Split DNS** to route `internal.josephkan.ca` → `10.20.0.2`
+      (the VPC resolver). Tailscale clients are not inside the VPC and won't use its
+      resolver by default — without this the private zone looks broken from a laptop even
+      though the AWS side is correct. Most common failure mode of this setup.
+- [ ] Delegate `newnotams.net` to Route53 using the same replicate → verify → delegate
+      sequence used for `josephkan.ca`.
 - [ ] **RDS deferred.** Neither application needs relational storage. Provision when a real
       need appears — saves ~$12/mo. Backup/restore drill moves to whenever that happens,
       or applies to DynamoDB PITR in Phase 2.

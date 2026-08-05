@@ -102,12 +102,17 @@ tractable.
 
 ---
 
-## Personal site
+## Personal site (`josephkan.ca`)
 
 Portfolio and personal page. Next.js 12 / React 18, SCSS modules, Chart.js visualizations of
 live OANDA trading data, project write-ups.
 
 **Repo:** `github.com/JosephKan3/personal-website`
+**Currently:** Vercel. Apex `A 76.76.21.21`, `www CNAME cname.vercel-dns.com`. Registered at
+GoDaddy. No MX, no TXT — nothing at risk during DNS migration.
+
+The domain doubles as the **platform** domain (ADR-0006): the apex serves this site, while
+`api.` and the Tailscale-only `internal.` private zone hang off the same zone.
 
 ### What it actually needs
 
@@ -141,6 +146,9 @@ criterion is met.
 
 - Next.js 12 is well past end of life. Either upgrade to 14/15 or, since the site is fully
   static, `next export` it as-is. The upgrade is worth doing but should not block Phase 0.
+- The apex must be a Route53 **ALIAS** record, not a CNAME — DNS forbids CNAMEs at a zone
+  apex, and CloudFront gives you a hostname rather than a stable IP. This is the reason DNS
+  delegation to Route53 is mandatory rather than a preference (ADR-0006).
 
 Estimated cost: **under $1/mo.**
 

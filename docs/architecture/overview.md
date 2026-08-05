@@ -94,7 +94,11 @@ Inside the Platform account, one VPC:
 Access and delivery:
 
 ```
-  Public traffic    →  CloudFront / ALB  →  Lambda · Fargate · S3
+  josephkan.ca      →  Route53 ALIAS  →  CloudFront  →  S3 (personal site)
+  newnotams.net     →  Route53 ALIAS  →  CloudFront  →  Lambda (OpenNext)
+  internal.*.ca     →  PRIVATE zone   →  Tailscale Split DNS  →  10.20.0.2
+                       (NXDOMAIN publicly — nothing discoverable)
+
   Admin traffic     →  Tailscale  →  subnet router  →  entire VPC
                        (no public SSH, no public DB ports, ever)
   Deployment        →  GitHub  →  OIDC  →  scoped role  →  CDK  →  CloudFormation
@@ -115,7 +119,7 @@ Each row links to the ADR holding the full reasoning, consequences, and rejected
 | [0003](../decisions/0003-compute-progression.md) | Lambda + Fargate. Kubernetes dropped | ~$200/mo for workloads that fit in Lambda; every capability has a managed replacement |
 | [0004](../decisions/0004-repository-strategy.md) | Single monorepo, enforced internal layering | Multi-repo decouples *teams*; there is one team |
 | [0005](../decisions/0005-ai-automation-boundary.md) | Durable-workflow Platform API with approval gates | A Platform API is not a security control by itself; workflows + scoped roles + gates are |
-| [0006](../decisions/0006-domains.md) | Two domains, Route53-registered and hosted | Product identity separate from platform identity; DNS in-account removes cross-account friction |
+| [0006](../decisions/0006-domains.md) | `josephkan.ca` as the platform domain, DNS delegated to Route53 | Already owned; apex-on-CloudFront requires Route53 ALIAS records |
 
 ### 3.1 Accounts and identity
 
@@ -320,22 +324,31 @@ sit outside those three methods.
 
 ### 3.6 Domains
 
-Two domains, deliberately separate (ADR-0006):
+Two domains, already owned, deliberately separate (ADR-0006). **Nothing new is registered.**
 
-- **`<yourname>.com`** — platform and personal. Portfolio site, `api.`, `auth.`, and the
-  `internal.` **private** hosted zone which resolves only over Tailscale. Registered in
-  Route53 (~$14/yr, free WHOIS privacy, hosted zone in the same account so ACM validation
-  and CloudFront aliases need no cross-account role).
-- **`newnotams.net`** — the product. Nothing platform-related. Left at its current registrar
-  with NS **delegated** to Route53, not transferred; avoids the 60-day transfer lock and
-  decouples DNS control from registrar migration.
+- **`josephkan.ca`** — platform and personal. Apex serves the personal site; `api.` and the
+  `internal.` **private** zone (Tailscale-only, no public records) hang off it.
+- **`newnotams.net`** — the product. Nothing platform-related, so it can be spun out cleanly.
 
-Keeping product identity separate from platform identity matches ADR-0004: if NewNotams is
-ever spun out, the domain goes with it and nothing is entangled.
+Both stay registered where they are (GoDaddy for `josephkan.ca`) with **nameservers
+delegated to Route53**. Registration and DNS hosting are separable, and only DNS hosting
+matters architecturally — transferring incurs a 60-day lock and gains nothing.
 
-Registration is not a CloudFormation resource, so it joins the small documented set of
-manual Phase 0 bootstrap steps. Everything downstream — records, certificates, aliases — is
-CDK-managed.
+**Delegation is mandatory, not a preference.** The apex must point at CloudFront, CloudFront
+gives you a hostname rather than a stable IP, and DNS forbids a CNAME at a zone apex. Only
+Route53's proprietary **ALIAS record** solves this. Everything else — automated ACM DNS
+validation, the private zone, CDK-managed records — follows from the same delegation.
+
+The migration is sequenced so **DNS migration and hosting migration are independent**:
+replicate the existing Vercel records into Route53 → verify against the AWS nameservers →
+lower TTLs → delegate (a no-op, since contents are identical) → later, flip the apex to an
+ALIAS. If the AWS deployment misbehaves, that last step reverts in five minutes without
+touching nameservers.
+
+`.ca` was previously assumed to be a compromise versus `.com`. It isn't: CIRA has no spam
+reputation problem, and a Canadian developer running a Canadian aviation product on a `.ca`
+is a signal rather than a concession. A future startup would register its own domain anyway,
+which is why personal and company identity should stay separate.
 
 ---
 
@@ -392,9 +405,9 @@ surface, and survives OANDA outages.
 | IaC | **AWS CDK (TypeScript)** | Correct over Serverless Framework and over Terraform for this stack. One language, real abstraction, jest-testable. |
 | CI/CD | GitHub Actions + OIDC | No static keys anywhere. Separate read-only plan role from apply role. |
 | Private access | **Tailscale subnet router**, `t4g.nano`, advertising the VPC CIDR | The "don't install it everywhere" instinct was right. Tailscale SSH, ACLs by tag. |
-| DNS | Route53 public zone + `internal.*` private zone | |
-| Public certs | ACM | Free, auto-renewing. **Never ACM Private CA — $400/mo.** |
-| Database | RDS Postgres `t4g.micro` + **pgvector** | One instance, database + role per app. Qdrant only if pgvector demonstrably fails. |
+| DNS | Route53 hosting for `josephkan.ca` + `newnotams.net`, plus an `internal.` private zone. Registrations stay at their current registrars. | ALIAS records are the reason delegation is mandatory. Tailscale Split DNS → `10.20.0.2` for the private zone. |
+| Public certs | ACM, DNS-validated, `us-east-1` for CloudFront | Free, auto-renewing. **Never ACM Private CA — $400/mo.** |
+| Database | **DynamoDB first** (fits both apps' access patterns, keeps Lambda out of the VPC). RDS Postgres + pgvector when something needs relational or vector storage. | Deferred out of Phase 1 — neither app needs it. |
 | Cache | **None initially** | Lambda memory or DynamoDB. ElastiCache only on measured need. |
 | Auth | **Authentik** on one Fargate task, OIDC everywhere | Phase 2. Right pick over Keycloak for a solo operator. No app manages its own users. |
 | Workflows | **Step Functions** | Temporal Cloud is the upgrade path; self-hosted Temporal (~$50/mo) only if the ops experience is the goal. |
@@ -411,8 +424,8 @@ that break silently. Two named, tested profiles:
 
 ```ts
 type Profile = 'dev' | 'prod';
-// dev:  Lambda + Fargate Spot, shared RDS, 14d logs, no deletion protection
-// prod: Lambda + Fargate, RDS with PITR, 30d logs, deletion protection, CodeDeploy canary
+// dev:  Lambda + Fargate Spot, 14d logs, no deletion protection
+// prod: Lambda + Fargate, 30d logs, deletion protection, PITR, CodeDeploy canary
 ```
 
 A third is added only when a real third case exists.
@@ -523,9 +536,7 @@ Recorded so they can be defended rather than discovered.
 
 Deliberately unresolved. Answer them when the need is concrete, not before.
 
-1. **The platform domain name.** The only true Phase 0 blocker. `newnotams.net` is settled;
-   the personal/platform `.com` is not. Everything DNS-touching waits on it.
-2. **IPv6 coverage in practice.** How much actually works over EIGW. Phase 1 answers this
+1. **IPv6 coverage in practice.** How much actually works over EIGW. Phase 1 answers this
    empirically; the answer determines how many public IPv4 addresses get paid for.
 3. **Authentik vs Cognito vs staying on Auth.js.** With only NewNotams needing identity,
    Authentik costs a Fargate task plus an ALB (~$29/mo) to replace something that works.

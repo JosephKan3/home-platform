@@ -18,8 +18,10 @@ Nothing is built yet. This repo currently holds the design review, decisions, an
 
 | App | Domain | Phase | Shape |
 | --- | --- | --- | --- |
-| Personal site | `<yourname>.com` | 0 | Static + scheduled OANDA fetch. The pipeline proof. |
+| Personal site | `josephkan.ca` | 0 | Static + scheduled OANDA fetch. The pipeline proof. |
 | NewNotams | `newnotams.net` | 1 | Next.js on Lambda, auth, KV store, hourly push job. |
+
+Both domains are already owned. DNS delegates to Route53; registrations stay put.
 
 Neither needs a VPC — both run as VPC-less Lambdas with free egress, which validates the
 no-NAT design directly.
