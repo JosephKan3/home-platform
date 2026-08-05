@@ -101,11 +101,52 @@ CIDRs stay pre-allocated and non-overlapping so peering is always possible:
 10.40.0.0/16  reserved — future Sandbox
 ```
 
-### Enforcement
+### Enforcement — two layers
 
-An SCP denies `ec2:CreateNatGateway` and `ec2:CreateTransitGateway` outright. This turns
-the cost decision into a reviewed act rather than an accident — including an accidental
-`SubnetType.PRIVATE_WITH_EGRESS` in CDK, which silently creates a NAT Gateway.
+**Layer 1: fail at synth (fast, local, before anything is attempted).**
+
+A custom CDK Aspect, `NoManagedEgressAspect`, applied at the `App` root, adds an error
+annotation — which fails `cdk synth` — on:
+
+- Any `AWS::EC2::NatGateway` in the synthesized template.
+- Any `AWS::EC2::TransitGateway` or `AWS::EC2::TransitGatewayAttachment`.
+- Any `ec2.Subnet` whose construct tree indicates `PRIVATE_WITH_EGRESS`.
+- Any `AWS::EC2::VPCEndpoint` with `VpcEndpointType: Interface` not present in an explicit
+  allowlist (warns rather than errors, since these are sometimes justified).
+
+```ts
+export class NoManagedEgressAspect implements IAspect {
+  visit(node: IConstruct): void {
+    if (node instanceof CfnNatGateway) {
+      Annotations.of(node).addError(
+        'NAT Gateway blocked (ADR-0002, ~$33/mo). Use a public subnet with a strict SG, ' +
+        'an IPv6 egress-only IGW, or a Lambda with no VPC attachment.',
+      );
+    }
+    if (node instanceof CfnTransitGateway || node instanceof CfnTransitGatewayAttachment) {
+      Annotations.of(node).addError('Transit Gateway blocked (ADR-0002, ~$36/mo/attachment).');
+    }
+    if (node instanceof CfnVPCEndpoint && node.vpcEndpointType === 'Interface'
+        && !ALLOWED_INTERFACE_ENDPOINTS.has(node.serviceName)) {
+      Annotations.of(node).addWarning(
+        `Interface endpoint ${node.serviceName} costs $7.30/AZ/mo. Add to the allowlist with a reason.`,
+      );
+    }
+  }
+}
+```
+
+The `PRIVATE_WITH_EGRESS` case is caught for free: that subnet type is *what creates* the
+`CfnNatGateway`, so the first rule fires with an error message that names the actual cause.
+
+A unit test asserts the Aspect fires, so the guardrail itself can't silently rot.
+
+**Layer 2: SCP denies `ec2:CreateNatGateway` and `ec2:CreateTransitGateway`.**
+
+Backstop for anything that bypasses CI — console clicks, a local `cdk deploy`, a Lambda,
+a third-party tool. Layer 1 gives a fast, readable failure; layer 2 makes it impossible.
+Both are needed: the Aspect alone is advisory, the SCP alone produces an opaque
+`UnauthorizedOperation` deep in a CloudFormation rollback.
 
 ## Rationale
 

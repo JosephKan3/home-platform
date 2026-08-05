@@ -72,6 +72,49 @@ retained, and dashboarded.
 - This is a materially better portfolio artifact than an off-the-shelf MCP configuration:
   it demonstrates security thinking, durable execution, and least privilege, not integration.
 
+## Portability: keep the activities pure, not a `WorkflowEngine` facade
+
+The migration risk is real and worth designing against, but a generic
+`WorkflowEngine { start, signal, cancel }` interface is the wrong shape for it. Such a
+facade collapses to the lowest common denominator of both engines, leaks anyway (ASL
+retry/catch semantics and Temporal's determinism constraints do not have a shared
+abstraction), and the parts most expensive to port — orchestration topology, retry policy,
+compensation wiring — sit *outside* those three methods.
+
+**The portable boundary is the activity, not the engine.** Enforce two rules:
+
+1. **Every activity is a plain, engine-agnostic async function.** Typed input, typed
+   output, no SDK imports, no `Context`, no task tokens, no ASL awareness. These hold all
+   the business logic — the code that would be genuinely painful to rewrite.
+
+   ```ts
+   // services/platform-api/activities/deploy.ts — knows nothing about any engine
+   export async function deployService(
+     input: { app: string; env: Env; imageTag: string },
+   ): Promise<{ deploymentId: string }> { /* ... */ }
+   ```
+
+2. **A thin adapter layer per engine wraps them.** Today: a Lambda handler per activity,
+   invoked by a Step Functions task state. Under Temporal: the same functions registered as
+   activities on a worker. The adapter is a few lines each and is *expected* to be rewritten.
+
+   ```ts
+   // adapters/stepfunctions/deploy.handler.ts
+   export const handler = async (event: DeployInput) => deployService(event);
+   ```
+
+Orchestration itself — the state machine or the workflow function — is written natively for
+whichever engine is in use. It is deliberately *not* abstracted, because that is where the
+engine's actual value lives and where a facade would force you to give it up.
+
+The one thing worth keeping engine-neutral at the API surface is the **workflow ID**: the
+Platform API returns an opaque `operationId` rather than a Step Functions execution ARN, so
+callers, the MCP server, and the deploy bot never encode engine specifics. Status lookup is
+a table mapping `operationId` → engine + native handle.
+
+This gives the real migration benefit — the business logic ports unchanged — at close to
+zero design cost, and without a speculative interface that would need maintaining forever.
+
 ## Consequences
 
 - Step Functions is serverless: no workers, no cluster, no idle cost. Pay per state

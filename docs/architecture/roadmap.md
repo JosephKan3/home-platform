@@ -30,8 +30,16 @@ The only manual work in the project happens here. Keep the list short and docume
       with required reviewers. Dev role carries a permissions boundary denying
       `aws:ResourceTag/env = prod`.
 - [ ] Monorepo scaffold: pnpm workspaces, Turborepo, CDK app, jest, eslint, cdk-nag, Renovate.
-- [ ] CDK Aspects: enforce tags, enforce log retention. Fail synth, not deploy.
-- [ ] CI: lint → test → synth → cdk-nag → diff on PR; deploy on merge to `main`.
+      Top-level split `infrastructure/` `applications/` `automation/` `packages/`.
+- [ ] `eslint-plugin-boundaries` encoding the dependency matrix in ADR-0004.
+      Applications must not import infrastructure, and vice versa.
+- [ ] CDK Aspects, all failing **synth** rather than deploy:
+      - `NoManagedEgressAspect` — errors on NAT Gateway, Transit Gateway,
+        `PRIVATE_WITH_EGRESS`; warns on non-allowlisted interface endpoints.
+      - Tag enforcement (`app`, `env`, `owner`).
+      - Log retention enforcement.
+      Each with a unit test asserting it actually fires.
+- [ ] CI: lint → boundaries → test → synth → aspects → cdk-nag → diff on PR; deploy on merge.
 - [ ] Ship the portfolio site: S3 + CloudFront + OAC + ACM. First real thing deployed.
 
 **Exit criteria:** a merge to `main` deploys to production with nobody touching the console.
@@ -98,6 +106,10 @@ All internal tools behind SSO + Tailscale. Container images signed and scanned.
 - [ ] Platform API. Every mutating operation is a **Step Functions** execution:
       scoped role per step, `waitForTaskToken` approval gates, SSM kill switch,
       structured audit events. See ADR-0005.
+- [ ] Keep `automation/platform-api/activities/` engine-agnostic — plain typed async
+      functions, zero engine SDK imports. Thin per-engine adapters wrap them. API returns
+      an opaque `operationId`, never an execution ARN. Preserves the Temporal path without
+      building a facade for it.
 - [ ] `platform-mcp` server wrapping the Platform API. Read-only GitHub + CloudWatch MCP
       alongside. **No filesystem, Docker, or DB-write MCP in any agent context that reads
       third-party text.**

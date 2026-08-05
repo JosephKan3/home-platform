@@ -61,8 +61,9 @@ Combined: roughly **$140-200/mo avoided** against the original design.
 - **CloudWatch Logs default retention is infinite.** Enforce 14d dev / 30d prod via a CDK
   Aspect. This is the most common silent cost leak in any AWS account.
 - **NAT Gateway can be created accidentally.** `SubnetType.PRIVATE_WITH_EGRESS` in CDK
-  creates one per AZ without asking. The SCP denying `ec2:CreateNatGateway` is what
-  actually prevents this; synth will fail loudly instead of billing quietly.
+  creates one per AZ without asking. Two layers prevent it (ADR-0002): a CDK Aspect that
+  fails `cdk synth` with a message naming the cause, and an SCP denying
+  `ec2:CreateNatGateway` as a backstop for anything bypassing CI.
 - **Data transfer between AZs is $0.01/GB each way.** With 2 AZs and a shared RDS, chatty
   cross-AZ traffic adds up. Keep compute and its database AZ-aligned where it's free to do so.
 - **AWS Config** is not enabled by default here. Leave it off until there's a reason; its
@@ -86,6 +87,8 @@ better story than a $300/mo cluster.
 - Cost Anomaly Detection monitor.
 - SCP: region lock to primary + `us-east-1`.
 - SCP: deny `ec2:CreateNatGateway`, `ec2:CreateTransitGateway`.
+- CDK Aspect `NoManagedEgressAspect`: fail synth on NAT GW, TGW, `PRIVATE_WITH_EGRESS`;
+  warn on non-allowlisted interface endpoints. Faster and more readable than the SCP denial.
 - SCP: deny `ec2:RunInstances` for `p*`, `g*`, `x*`, `u-*`, `*.metal`, and anything above `large`.
 - SCP: deny IAM user and access key creation.
 - SCP: deny disabling CloudTrail or GuardDuty; deny leaving the organization.
