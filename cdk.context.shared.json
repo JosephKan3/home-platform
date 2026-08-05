@@ -1,0 +1,8 @@
+{
+  "_comment": "Feature flags every CDK app in this repo must set. Copy into each package's cdk.json 'context' block. The two aspect flags are load-bearing: without them, Tags (a mutating aspect) runs after RequiredTagsAspect, which then sees untagged resources and fails synth with a false positive.",
+  "@aws-cdk/core:aspectPrioritiesMutating": true,
+  "@aws-cdk/core:aspectStabilization": true,
+  "@aws-cdk/aws-iam:minimizePolicies": true,
+  "@aws-cdk/core:checkSecretUsage": true,
+  "@aws-cdk/core:target-partitions": ["aws"]
+}

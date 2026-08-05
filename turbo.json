@@ -1,0 +1,25 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", "lib/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "lint": {
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"]
+    },
+    "synth": {
+      "dependsOn": ["^build"],
+      "outputs": ["cdk.out/**"],
+      "env": ["CDK_DEFAULT_ACCOUNT", "CDK_DEFAULT_REGION"]
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@platform/infra-bootstrap",
+  "version": "0.0.0",
+  "private": true,
+  "main": "dist/lib/github-oidc-stack.js",
+  "types": "dist/lib/github-oidc-stack.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint bin lib --no-ignore",
+    "test": "jest --passWithNoTests",
+    "synth": "cdk synth"
+  },
+  "dependencies": {
+    "@platform/config": "workspace:*",
+    "@platform/constructs": "workspace:*"
+  },
+  "devDependencies": {
+    "aws-cdk-lib": "^2.173.2",
+    "constructs": "^10.4.2"
+  },
+  "peerDependencies": {
+    "aws-cdk-lib": "^2.173.2",
+    "constructs": "^10.4.2"
+  }
+}

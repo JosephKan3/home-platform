@@ -1,8 +1,18 @@
 node_modules/
 cdk.out/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# Build output only. Do NOT use a bare `lib/` pattern: CDK convention puts stack
+# SOURCE in <package>/lib/, so `lib/` silently excludes real code from git.
+packages/*/dist/
+infrastructure/*/dist/
+applications/*/dist/
+automation/*/dist/
+
 .env
 .env.*
+!.env.example
 *.log
 .DS_Store
-.turbo/
-dist/

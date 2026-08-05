@@ -1,0 +1,24 @@
+{
+  "name": "@platform/constructs",
+  "version": "0.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "jest --passWithNoTests"
+  },
+  "dependencies": {
+    "@platform/config": "workspace:*"
+  },
+  "devDependencies": {
+    "aws-cdk-lib": "^2.173.2",
+    "constructs": "^10.4.2"
+  },
+  "peerDependencies": {
+    "aws-cdk-lib": "^2.173.2",
+    "constructs": "^10.4.2"
+  }
+}

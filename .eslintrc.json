@@ -1,0 +1,42 @@
+{
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "module"
+  },
+  "plugins": ["@typescript-eslint", "boundaries"],
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "plugin:boundaries/recommended"
+  ],
+  "ignorePatterns": ["**/dist/**", "**/cdk.out/**", "**/node_modules/**", "**/*.js"],
+  "settings": {
+    "boundaries/include": ["**/*.ts"],
+    "boundaries/elements": [
+      { "type": "packages", "pattern": "packages/*", "mode": "folder" },
+      { "type": "infrastructure", "pattern": "infrastructure/*", "mode": "folder" },
+      { "type": "applications", "pattern": "applications/*", "mode": "folder" },
+      { "type": "automation", "pattern": "automation/*", "mode": "folder" }
+    ]
+  },
+  "rules": {
+    "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+    "boundaries/no-unknown": "off",
+    "boundaries/no-unknown-files": "off",
+    "boundaries/element-types": [
+      "error",
+      {
+        "default": "disallow",
+        "message": "ADR-0004: ${file.type} must not import ${dependency.type}. Applications and infrastructure are independent layers; consume platform resources via SSM parameter lookup, never cross-stack export.",
+        "rules": [
+          { "from": ["packages"], "allow": ["packages"] },
+          { "from": ["infrastructure"], "allow": ["packages", "infrastructure"] },
+          { "from": ["applications"], "allow": ["packages"] },
+          { "from": ["automation"], "allow": ["packages"] }
+        ]
+      }
+    ]
+  }
+}
