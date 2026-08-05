@@ -10,6 +10,10 @@ billing cycle.
 
 **Budget: $3-8/mo**
 
+> **Executable plan: [`../phase-0-action-plan.md`](../phase-0-action-plan.md)** — sequenced
+> stages, exact commands, exit criteria, and the gotcha list. The checklist below is the
+> summary; the action plan is what you work from.
+
 The only manual work in the project happens here. Keep the list short and documented.
 
 - [ ] **Delegate `josephkan.ca` DNS to Route53.** No registration needed — it's already owned

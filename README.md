@@ -30,7 +30,8 @@ no-NAT design directly.
 
 | Path | Purpose |
 | --- | --- |
-| **`docs/architecture/overview.md`** | **Start here. The complete reference.** |
+| **`docs/phase-0-action-plan.md`** | **Executable plan for the current phase.** |
+| **`docs/architecture/overview.md`** | **The complete design reference.** |
 | `docs/architecture/applications.md` | NewNotams and the personal site — what they need, migration paths |
 | `docs/cost/cost-model.md` | AWS unit costs, avoidances, and traps |
 | `docs/architecture/roadmap.md` | Phased build plan with exit criteria |
@@ -42,10 +43,18 @@ no-NAT design directly.
 | `docs/decisions/0005` | AI automation boundary and approval gates |
 | `docs/decisions/0006` | Domain strategy and registrar choice |
 
+## Current status
+
+**Design complete. Phase 0 not started.**
+
+First action: lower the `josephkan.ca` TTLs at GoDaddy to 300s. It's free, takes a minute,
+and every later DNS step waits on the old TTL expiring.
+
 ## Reading order
 
-1. `docs/architecture/overview.md` — everything, in one read
-2. `docs/decisions/` — the full reasoning behind each commitment
-3. `docs/architecture/roadmap.md` — execution order
-4. `docs/cost/cost-model.md` — the numbers
-5. `docs/architecture/review.md` — background critique of the original design
+1. `docs/phase-0-action-plan.md` — what to actually do next
+2. `docs/architecture/overview.md` — everything, in one read
+3. `docs/decisions/` — the full reasoning behind each commitment
+4. `docs/architecture/roadmap.md` — execution order
+5. `docs/cost/cost-model.md` — the numbers
+6. `docs/architecture/review.md` — background critique of the original design
