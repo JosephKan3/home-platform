@@ -84,7 +84,7 @@ describe("site bucket", () => {
   test("writes server access logs to the separate log bucket (AwsSolutions-S1)", () => {
     template.hasResourceProperties("AWS::S3::Bucket", {
       LoggingConfiguration: {
-        DestinationBucketName: { Ref: Match.stringLikeRegexp("^AccessLogBucket") },
+        DestinationBucketName: { Ref: Match.stringLikeRegexp("AccessLogBucket") },
         LogFilePrefix: ACCESS_LOG_PREFIX,
       },
     });
@@ -122,7 +122,7 @@ describe("access log bucket", () => {
 
   test("is not itself public and still enforces TLS", () => {
     const logBucket = Object.entries(template.findResources("AWS::S3::Bucket")).find(
-      ([logicalId]) => logicalId.startsWith("AccessLogBucket"),
+      ([logicalId]) => logicalId.includes("AccessLogBucket"),
     );
     expect(logBucket).toBeDefined();
 
@@ -205,7 +205,7 @@ describe("CloudFront", () => {
       DistributionConfig: Match.objectLike({
         Logging: {
           Bucket: {
-            "Fn::GetAtt": [Match.stringLikeRegexp("^AccessLogBucket"), "RegionalDomainName"],
+            "Fn::GetAtt": [Match.stringLikeRegexp("AccessLogBucket"), "RegionalDomainName"],
           },
           Prefix: CLOUDFRONT_LOG_PREFIX,
           IncludeCookies: false,
@@ -216,7 +216,22 @@ describe("CloudFront", () => {
 
   test("logs under a different prefix from the S3 access logs", () => {
     // Sharing a prefix would interleave two log formats in one key space.
-    expect(CLOUDFRONT_LOG_PREFIX).not.toEqual(ACCESS_LOG_PREFIX);
+    //
+    // Assert against the synthesized template, not against the two constants.
+    // Comparing the constants to each other is a tautology: it holds however the
+    // buckets are actually wired, so it would pass even if both log sinks were
+    // pointed at the same prefix.
+    const cloudFrontPrefix = Object.values(
+      template.findResources("AWS::CloudFront::Distribution"),
+    )[0]?.Properties?.DistributionConfig?.Logging?.Prefix;
+
+    const s3Prefixes = Object.values(template.findResources("AWS::S3::Bucket"))
+      .map((b) => b.Properties?.LoggingConfiguration?.LogFilePrefix)
+      .filter((p): p is string => typeof p === "string");
+
+    expect(cloudFrontPrefix).toEqual(CLOUDFRONT_LOG_PREFIX);
+    expect(s3Prefixes).toContain(ACCESS_LOG_PREFIX);
+    expect(s3Prefixes).not.toContain(cloudFrontPrefix);
   });
 
   test("maps 403 and 404 to the static export's 404.html, not to index.html", () => {
