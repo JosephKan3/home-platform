@@ -119,11 +119,19 @@ lines and applies our policy automatically" beats "I used a tool that does that.
 - One toolchain, one language, one test strategy, one CI pipeline shape.
 - Guardrails and cdk-nag apply to **every** resource without exception. ADR-0007 holds
   without a footnote.
-- Terse service definitions must be earned by writing L3 constructs. This is real work, it
-  is **not yet done**, and until it is, verbosity is a debt rather than a feature —
-  `applications/personal-site/lib/site-stack.ts` is ~660 lines for one bucket, one
-  distribution, and one function. Writing a `ServerlessApi` L3 is the platform-engineering
-  deliverable that repays it.
+- Terse service definitions must be earned by writing L3 constructs. **This debt has now
+  been partly repaid.** `applications/personal-site/lib/site-stack.ts` went from 659 lines
+  to 291 by extracting two reusable constructs into `packages/constructs`:
+
+  | Construct | Encapsulates | Declaration cost |
+  | --- | --- | --- |
+  | `StaticSite` | S3 + CloudFront + OAC + security headers + access logging + deployment | ~12 lines |
+  | `ScheduledJob` | Bundled ARM Lambda + explicit LogGroup + EventBridge Scheduler + least-privilege role | ~5 lines minimum |
+
+  Both carry the secure defaults and the ADR-0007 suppressions with them, so a second
+  consumer inherits the security posture rather than re-deriving it. These are the seed of
+  the `platform new-service` paved road in Phase 3. A `ServerlessApi` construct for
+  request-path services remains unwritten and is Phase 1 work.
 - The local development loop is worse than Serverless Framework's. See rationale 4.
 - No `services/` workspace layer is added. The four-layer structure in ADR-0004
   (`infrastructure/`, `applications/`, `automation/`, `packages/`) stands unchanged.
