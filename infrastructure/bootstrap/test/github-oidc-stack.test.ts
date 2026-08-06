@@ -8,7 +8,8 @@ process.env["MGMT_ACCOUNT_ID"] ??= "111111111111";
 process.env["PLATFORM_ACCOUNT_ID"] ??= "222222222222";
 
 import { App } from "aws-cdk-lib";
-import { Match, Template } from "aws-cdk-lib/assertions";
+import { Template } from "aws-cdk-lib/assertions";
+import { BOOTSTRAP_QUALIFIERS, DEV_PERMISSIONS_BOUNDARY_NAME } from "@platform/config";
 import { GitHubOidcStack } from "../lib/github-oidc-stack.js";
 
 const ISSUER = "token.actions.githubusercontent.com";
@@ -109,62 +110,32 @@ describe("GitHubOidcStack", () => {
     }
   });
 
-  test("the dev role carries a permissions boundary and the prod role does not", () => {
-    expect(trustPolicy(template, "gha-deploy-dev")["PermissionsBoundary"]).toBeDefined();
-    expect(trustPolicy(template, "gha-deploy-prod")["PermissionsBoundary"]).toBeUndefined();
-    expect(trustPolicy(template, "gha-plan")["PermissionsBoundary"]).toBeUndefined();
+  test("no gha-* role carries a permissions boundary", () => {
+    // The boundary is deliberately NOT attached here. gha-deploy-dev holds only
+    // sts:AssumeRole, so capping it caps nothing, and a boundary does not follow
+    // a role chain into the CDK bootstrap roles where the mutations happen. It
+    // is attached to cdk-<dev qualifier>-cfn-exec-role-* by `cdk bootstrap
+    // --custom-permissions-boundary` instead. See dev-permissions-boundary.test.ts.
+    for (const roleName of ["gha-deploy-dev", "gha-deploy-prod", "gha-plan"]) {
+      expect(trustPolicy(template, roleName)["PermissionsBoundary"]).toBeUndefined();
+    }
   });
 
-  test("the boundary denies every action on env=prod tagged resources", () => {
+  test("the boundary policy exists in this stack with its fixed name", () => {
+    // Created here, attached at bootstrap time — which is why the name must be
+    // stable rather than CDK-generated. Content is asserted in
+    // dev-permissions-boundary.test.ts.
     template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      ManagedPolicyName: "gha-deploy-dev-boundary",
-      PolicyDocument: {
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Effect: "Deny",
-            Action: "*",
-            Resource: "*",
-            Condition: { StringEquals: { "aws:ResourceTag/env": "prod" } },
-          }),
-        ]),
-      },
+      ManagedPolicyName: DEV_PERMISSIONS_BOUNDARY_NAME,
     });
   });
 
-  test("the boundary denies the actions that would let a role escape it", () => {
-    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      ManagedPolicyName: "gha-deploy-dev-boundary",
-      PolicyDocument: {
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Effect: "Deny",
-            Action: Match.arrayWith([
-              "iam:CreateUser",
-              "iam:CreateAccessKey",
-              "iam:DeleteUserPermissionsBoundary",
-              "iam:PutUserPermissionsBoundary",
-              "iam:DeleteRolePermissionsBoundary",
-              "iam:PutRolePermissionsBoundary",
-            ]),
-          }),
-        ]),
-      },
-    });
-  });
-
-  test("the boundary allows everything as its ceiling", () => {
-    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      ManagedPolicyName: "gha-deploy-dev-boundary",
-      PolicyDocument: {
-        Statement: Match.arrayWith([
-          Match.objectLike({ Effect: "Allow", Action: "*", Resource: "*" }),
-        ]),
-      },
-    });
-  });
-
-  test("deploy roles get power by assuming CDK bootstrap roles, not directly", () => {
-    for (const roleLogicalIdPrefix of ["GhaDeployDevRole", "GhaDeployProdRole"]) {
+  test("deploy roles get power by assuming their own qualifier's bootstrap roles", () => {
+    const expected: Array<[string, string]> = [
+      ["GhaDeployDevRole", BOOTSTRAP_QUALIFIERS.dev],
+      ["GhaDeployProdRole", BOOTSTRAP_QUALIFIERS.prod],
+    ];
+    for (const [roleLogicalIdPrefix, qualifier] of expected) {
       const policy = policyForRole(template, roleLogicalIdPrefix);
       const statement = policy.Statement[0] as Record<string, unknown>;
       expect(statement["Action"]).toBe("sts:AssumeRole");
@@ -176,14 +147,14 @@ describe("GitHubOidcStack", () => {
         "image-publishing-role",
         "lookup-role",
       ]) {
-        expect(rendered).toContain(`:role/cdk-*-${suffix}-*`);
+        expect(rendered).toContain(`:role/cdk-${qualifier}-${suffix}-`);
       }
       // Nothing but sts:AssumeRole. The power lives in the bootstrap roles.
       expect(policy.Statement).toHaveLength(1);
     }
   });
 
-  test("the plan role is read-only and may assume only the CDK lookup role", () => {
+  test("the plan role is read-only and may assume only the CDK lookup roles", () => {
     const props = trustPolicy(template, "gha-plan");
     expect(JSON.stringify(props["ManagedPolicyArns"])).toContain("ReadOnlyAccess");
 
@@ -192,14 +163,20 @@ describe("GitHubOidcStack", () => {
     const statement = policy.Statement[0] as Record<string, unknown>;
     expect(statement["Action"]).toBe("sts:AssumeRole");
     const rendered = JSON.stringify(statement["Resource"]);
-    expect(rendered).toContain(":role/cdk-*-lookup-role-*");
+    expect(rendered).toContain(`:role/cdk-${BOOTSTRAP_QUALIFIERS.dev}-lookup-role-`);
+    expect(rendered).toContain(`:role/cdk-${BOOTSTRAP_QUALIFIERS.prod}-lookup-role-`);
     expect(rendered).not.toContain("deploy-role");
     expect(rendered).not.toContain("publishing-role");
   });
 
-  test("outputs all three role ARNs", () => {
+  test("outputs the three role ARNs and the boundary name", () => {
     const outputs = template.findOutputs("*");
-    for (const name of ["PlanRoleArn", "DeployDevRoleArn", "DeployProdRoleArn"]) {
+    for (const name of [
+      "PlanRoleArn",
+      "DeployDevRoleArn",
+      "DeployProdRoleArn",
+      "DevPermissionsBoundaryName",
+    ]) {
       expect(outputs[name]).toBeDefined();
     }
   });

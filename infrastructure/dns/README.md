@@ -113,8 +113,10 @@ npx cdk deploy DnsStack --profile platform
 
 Record the outputs `PlatformZoneId` and `PlatformZoneNameServers`.
 
-Prerequisite from action plan §1: the existing GoDaddy records should already have been
-lowered to a 300s TTL, and the old TTL should have expired.
+No TTL preparation at GoDaddy is required first. Because Route53 and GoDaddy serve
+byte-identical answers at this point, no cached record is invalidated by the delegation —
+there is nothing to propagate. The 300s TTL that makes the later apex cutover reversible is
+set by this stack on the records it creates.
 
 ### D2 — Verify against the Route53 nameservers, before delegating
 

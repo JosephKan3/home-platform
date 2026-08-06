@@ -20,7 +20,7 @@ process.env["PLATFORM_ACCOUNT_ID"] ??= "222222222222";
 import { App, Stack } from "aws-cdk-lib";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import { AwsSolutionsChecks } from "cdk-nag";
-import { CLOUDFRONT_CERT_REGION } from "@platform/config";
+import { CLOUDFRONT_CERT_REGION, synthesizerFor } from "@platform/config";
 import { SiteStack } from "../lib/site-stack.js";
 import type { PolicyViolation } from "aws-cdk-lib";
 
@@ -36,6 +36,11 @@ function violations(): PolicyViolation[] {
   const app = new App();
   new SiteStack(app, "NagSiteStack", {
     env: ENV,
+    // The synthesizer must match bin/app.ts. Omitting it falls back to the
+    // default hnb659fds qualifier, which changes the CDK asset bucket name and
+    // therefore the granular IAM5 finding IDs the stack suppresses — the test
+    // would then report findings that cannot occur in a real deploy.
+    synthesizer: synthesizerFor("prod"),
     envName: "prod",
     usePlaceholderSource: true,
   });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { App, Aspects, AspectPriority, Validations } from "aws-cdk-lib";
 import { AwsSolutionsChecks } from "cdk-nag";
-import { accounts } from "@platform/config";
+import { accounts, managementSynthesizer } from "@platform/config";
 import {
   LogRetentionAspect,
   NoManagedEgressAspect,
@@ -32,7 +32,14 @@ function requiredContext(key: string): string {
 
 new GovernanceStack(app, "GovernanceStack", {
   // The one stack that targets the management account (action plan §6).
+  //
+  // Management is bootstrapped separately with its own qualifier and no
+  // permissions boundary: it is a different account, holds no workloads, and
+  // has no dev/prod split. `managementSynthesizer()` is used rather than
+  // `synthesizerFor("prod")` so this cannot silently point at the Platform
+  // account's prod bootstrap roles, which do not exist here.
   env: { account: accounts.management.id, region: accounts.management.region },
+  synthesizer: managementSynthesizer(),
   description: "Organization SCPs, org CloudTrail, budget and anomaly detection (Phase 0 §6).",
   workloadsOuId: requiredContext("workloadsOuId"),
   sandboxOuId: requiredContext("sandboxOuId"),

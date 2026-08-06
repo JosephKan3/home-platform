@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { App, AspectPriority, Aspects, Validations } from "aws-cdk-lib";
 import { AwsSolutionsChecks } from "cdk-nag";
-import { accounts } from "@platform/config";
+import { accounts, synthesizerFor } from "@platform/config";
 import {
   LogRetentionAspect,
   NoManagedEgressAspect,
@@ -18,10 +18,16 @@ const app = new App();
 const usePlaceholderSource = app.node.tryGetContext("sitePlaceholder") === "true";
 const siteSourcePath = app.node.tryGetContext("siteSourcePath");
 
+// The environment name drives both the resource profile and the bootstrap
+// qualifier, so the two cannot drift. A dev instance of this stack would pick up
+// the bounded cdk-hnbdev-cfn-exec-role by changing this one value.
+const envName = "prod";
+
 new SiteStack(app, "PersonalSiteStack", {
   env: { account: accounts.platform.id, region: accounts.platform.region },
+  synthesizer: synthesizerFor(envName),
   description: "josephkan.ca — S3 + CloudFront with a scheduled OANDA fetcher (Phase 0 §7).",
-  envName: "prod",
+  envName,
   usePlaceholderSource,
   siteSourcePath: typeof siteSourcePath === "string" ? siteSourcePath : undefined,
 });

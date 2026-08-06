@@ -5,47 +5,82 @@ work and whether it gates the Phase 0 exit criteria.
 
 ---
 
-## 1. The dev permissions boundary does not actually constrain `cdk deploy`
+## 1. The dev permissions boundary did not constrain `cdk deploy`
 
-**Severity: high. Gates a Phase 0 exit criterion.**
+**Severity: was high. Resolved in code; one manual step remains before the exit criterion
+can be signed off.**
+
+### What was broken, and why it matters
 
 ADR-0001 leans on a permissions boundary as the mechanism that makes sharing one account
-between dev and prod survivable. `infrastructure/bootstrap` creates that boundary and
-attaches it to `gha-deploy-dev`, denying any action where `aws:ResourceTag/env = prod`.
+between dev and prod survivable. `infrastructure/bootstrap` created that boundary and
+attached it to `gha-deploy-dev`, denying any action where `aws:ResourceTag/env = prod`.
 
-It does not work as intended, for two compounding reasons:
+It did not work, for two compounding reasons:
 
 1. **`gha-deploy-dev` holds no direct AWS permissions.** Its only statement is
-   `sts:AssumeRole` on the `cdk-*` bootstrap roles. So the boundary caps a role that has
+   `sts:AssumeRole` on the `cdk-*` bootstrap roles. So the boundary capped a role that had
    nothing to cap.
 2. **A permissions boundary does not follow a role chain.** The actual mutations happen
-   inside `cdk-<qualifier>-deploy-role-<account>-<region>`, which is a separate role with
-   its own (broad) policy and no boundary. Nothing dev CI does is constrained by it.
+   further down the chain, in a separate role with its own broad policy and no boundary.
+   Nothing dev CI did was constrained by it.
 
-Additionally, `aws:ResourceTag` only evaluates on API calls against resources that
-*already* carry the tag. It cannot prevent creating untagged resources, and it does not
-apply during creation. `RequiredTagsAspect` closes that at synth time, but synth-time
-enforcement is bypassed by anyone calling the AWS API directly.
+This reasoning is kept because it is the whole reason the fix looks the way it does. The
+failure mode was not a missing statement — the policy was correct — it was a correct policy
+attached to a principal where it could not do anything. That is invisible in a diff and
+would have passed any review that checked the policy document.
 
-**The Phase 0 exit criterion "a CI test proves `gha-deploy-dev` is denied an action on an
-`env=prod` tagged resource" is therefore not currently satisfiable in a meaningful way.**
-A test asserting the denial would pass for the wrong reason — proving the absence of an
-Allow, not the presence of a boundary.
+A test asserting the denial would have passed for the wrong reason: proving the absence of
+an Allow, not the presence of a boundary. Such a test existed and was deleted rather than
+kept as false assurance.
 
-**Fix:** re-bootstrap with a custom permissions boundary so the CDK execution role itself
-carries it:
+### What actually fixed it
 
-```
-cdk bootstrap --custom-permissions-boundary dev-boundary
-```
+Verified against `aws-cdk@2.1135.0`'s bootstrap template
+(`lib/api/bootstrap/bootstrap-template.yaml`): `--custom-permissions-boundary` sets
+`PermissionsBoundary` on the `CloudFormationExecutionRole` resource and on **nothing else**.
+Not the deploy role, not the lookup role, not the publishing roles. So the boundary has to
+live on `cdk-<qualifier>-cfn-exec-role-*`, and dev and prod need different ones — which means
+different bootstrap qualifiers, since one bootstrap per account produces one execution role.
 
-This requires a separate bootstrap qualifier per environment (`--qualifier dev` /
-`--qualifier prod`) so the two get different execution roles, and corresponding changes to
-`infrastructure/bootstrap` to grant each GitHub role only its own qualifier's roles.
+Changed:
 
-**Until then:** treat dev and prod separation as convention, not control, and say so
-plainly rather than claiming a boundary that isn't load-bearing. Do not let the design doc
-overstate it.
+- `packages/config/src/bootstrap.ts` — qualifiers defined once (`hnbdev`, `hnbprod`,
+  `hnbmgmt`), validated against the template's 10-character limit, and exposed as
+  `synthesizerFor(env)` / `managementSynthesizer()` so bootstrap and synth cannot drift.
+- `infrastructure/bootstrap` — the boundary is now a fixed-name managed policy
+  (`cdk-dev-permissions-boundary`), attached to no role in the stack, plus Denies on editing
+  the boundary policy itself and on creating principals without it. Each `gha-*` role's
+  `sts:AssumeRole` is scoped to its own qualifier: `gha-deploy-dev` can no longer reach the
+  prod qualifier's unbounded execution role, which would have been a complete bypass.
+- All four apps pass an explicit synthesizer; `infrastructure/org` uses the management
+  qualifier rather than defaulting into a Platform-account one.
+- `docs/phase-0-action-plan.md` §2 A6 — the bootstrap order, which is not the obvious one:
+  the boundary policy must exist before `cdk bootstrap --custom-permissions-boundary`
+  references it, so §4 C1 lands *between* the prod and dev bootstraps.
+
+### What is still true
+
+`aws:ResourceTag` only evaluates on API calls against resources that *already* carry the tag.
+It cannot prevent creating untagged resources, and it does not apply during creation.
+`RequiredTagsAspect` closes that at synth time, but synth-time enforcement is bypassed by
+anyone calling the AWS API directly. This is unchanged and is a property of tag-based IAM, not
+of this fix.
+
+Prod remains deliberately unbounded. Its control is the GitHub Environment review gate.
+
+### What remains manual
+
+`infrastructure/bootstrap/test/dev-permissions-boundary.test.ts` asserts every offline
+precondition and states in its own header what it cannot prove. It cannot prove the denial,
+because IAM evaluation happens in AWS against roles created by the CDK CLI's template.
+
+The live probe in `infrastructure/bootstrap/README.md` ("Verify the boundary is load-bearing")
+is what closes the loop, and it is deliberately a two-call probe: tagging an untagged bucket
+must **succeed** while tagging an `env=prod` bucket is **denied**. Without the control call
+the result is indistinguishable from the original bug.
+
+**Until that probe is run against the real account, the exit criterion is not signed off.**
 
 ---
 
@@ -62,8 +97,11 @@ running, and a second CloudFront distribution would cost money for no benefit. B
 the dev/prod split is untested until Phase 1, when NewNotams arrives with a real staging
 need (`staging.newnotams.net` is already in the ADR-0006 namespace plan).
 
-**Decide in Phase 1**, alongside issue 1, since the boundary fix and the first real dev
-stack should land together.
+**Decide in Phase 1.** Issue 1's boundary now exists and is attached, so the first real dev
+stack inherits it rather than waiting on it. One constraint it must respect: the boundary
+denies `iam:CreateRole` unless the new role carries the same boundary, so any dev stack that
+creates an IAM role must apply it (`PermissionsBoundary.of(scope).apply(...)`) or its deploy
+is denied.
 
 ---
 
@@ -145,7 +183,29 @@ most important manual verification in Phase 0.
 
 ---
 
-## 7. Next.js 12 is past end of life
+## 7. OpenNext does not fully support Windows
+
+**Severity: medium. Blocks the Phase 1 NewNotams migration on this machine.**
+
+The Phase 1 plan deploys NewNotams as Next.js on Lambda via OpenNext. The OpenNext
+maintainers state Windows support is not guaranteed: Next.js tooling itself has Windows
+issues, OpenNext is built on that tooling, and the team explicitly deprioritizes Windows
+testing.
+
+Their recommended options are WSL, a Linux VM, or developing with standard Next.js tooling
+locally and running the OpenNext build **only in CI on Linux runners**.
+
+**Likely answer:** the third. Develop with `next dev` on Windows, and let GitHub Actions
+(`ubuntu-latest`) run `open-next build` and the deploy. This costs nothing, matches how the
+personal site already deploys, and avoids maintaining a WSL toolchain — but it means the
+OpenNext output cannot be inspected locally, so build failures surface only in CI.
+
+**Decide before starting Phase 1.** If local OpenNext iteration turns out to be necessary,
+WSL is the fallback. Independent of the IaC choice in ADR-0008.
+
+---
+
+## 8. Next.js 12 is past end of life
 
 **Severity: low. Deliberately deferred.**
 

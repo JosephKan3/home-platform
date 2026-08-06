@@ -24,7 +24,14 @@ import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import * as scheduler from "aws-cdk-lib/aws-scheduler";
 import { LambdaInvoke } from "aws-cdk-lib/aws-scheduler-targets";
 import * as ssm from "aws-cdk-lib/aws-ssm";
-import { DEFAULT_OWNER, applyPlatformTags, domains, profileFor, ssmPaths } from "@platform/config";
+import {
+  DEFAULT_OWNER,
+  applyPlatformTags,
+  bootstrapQualifierFor,
+  domains,
+  profileFor,
+  ssmPaths,
+} from "@platform/config";
 import { flattenForNagId, suppressNagRules, suppressNagRulesAtPath } from "@platform/constructs";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -483,7 +490,7 @@ export class SiteStack extends Stack {
       prune: false,
     });
 
-    this.suppressDeploymentHandlerFindings(deployment);
+    this.suppressDeploymentHandlerFindings(deployment, bootstrapQualifierFor(props.envName));
   }
 
   /**
@@ -494,7 +501,10 @@ export class SiteStack extends Stack {
    * stack. They are addressed by construct path because there is no handle to
    * the generated role.
    */
-  private suppressDeploymentHandlerFindings(deployment: s3deploy.BucketDeployment): void {
+  private suppressDeploymentHandlerFindings(
+    deployment: s3deploy.BucketDeployment,
+    qualifier: string,
+  ): void {
     const handler = deployment.node.scope;
     if (handler === undefined) {
       throw new Error("BucketDeployment has no enclosing scope.");
@@ -531,9 +541,12 @@ export class SiteStack extends Stack {
         reason: cdkOwned,
       },
       {
+        // The asset bucket name embeds the bootstrap qualifier, which is
+        // per-environment (ADR-0001, packages/config/src/bootstrap.ts), so this
+        // finding ID cannot be a literal.
         id:
           "AwsSolutions-IAM5[Resource::arn:<AWS::Partition>:s3:::" +
-          `cdk-hnb659fds-assets-${this.account}-${this.region}/*]`,
+          `cdk-${qualifier}-assets-${this.account}-${this.region}/*]`,
         reason: cdkOwned,
       },
     ]);

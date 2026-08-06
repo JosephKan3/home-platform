@@ -43,17 +43,36 @@ it is a Phase 2+ concern, not a Phase 0 one.
 
 ## 1. Start these on day 1 — they have lead time
 
-Three things take 24-48 hours of waiting. Kick them off first and do everything else while
-they settle.
+Two things take ~24 hours to become useful. Kick them off early; neither blocks anything.
 
 | Item | Lead time | Blocks |
 | --- | --- | --- |
-| **Lower `josephkan.ca` TTLs at GoDaddy to 300s** | Old TTL must expire (likely 1h-24h) | The nameserver switch in §5 |
 | **Activate cost allocation tags** | ~24h to appear, and only applies going forward | Nothing, but data is lost until active |
 | **Create AWS Budgets** | ~24h before first evaluation | Nothing, but you're flying blind until then |
 
-Do the TTL change **now**, before anything else. It costs nothing and every later DNS step
-depends on it.
+While at GoDaddy, confirm **auto-renew and transfer lock are ON**. A lapsed registration
+takes down both the platform and the product. That is the only thing worth doing there now.
+
+### Correction: lowering TTLs at GoDaddy is NOT required
+
+An earlier version of this plan said to lower the GoDaddy record TTLs to 300s before
+anything else, and called it a blocker for the §5 nameserver switch. **That was wrong**, and
+it conflated two different caches.
+
+- **Record TTL** controls how long resolvers cache an *answer* (e.g. `A 76.76.21.21`).
+- **Delegation** controls *which nameservers* are asked in the first place.
+
+At **D3 (the nameserver switch)** the zone contents on both sides are byte-identical. A
+resolver serving a cached `76.76.21.21` and a resolver doing a fresh lookup against Route53
+both produce `76.76.21.21`. No answer changes, so there is nothing to propagate and the old
+TTL is irrelevant.
+
+TTL only becomes load-bearing at **G1 (the apex cutover)**, where the value genuinely
+changes — and that is already handled: `infrastructure/dns` sets a 300s TTL on every record
+it creates, so by the time you reach G1 the records are Route53's and already short-lived,
+regardless of what GoDaddy was serving.
+
+**Net: deploy the DNS stack, delegate, then change records.** No TTL preparation needed.
 
 ---
 
@@ -137,12 +156,55 @@ aws sts get-caller-identity --profile platform
 Both must return an `assumed-role/AWSReservedSSO_AdministratorAccess/...` ARN. **From this
 point, root is never used again** for either account.
 
-### A6. CDK bootstrap
+### A6. CDK bootstrap — three qualifiers, and step C1 lands in the middle
+
+Not one bootstrap per account. ADR-0001 shares one account between dev and prod, and the only
+place a permissions boundary changes any outcome is the CDK CloudFormation execution role —
+`cdk bootstrap --custom-permissions-boundary` attaches the boundary there and nowhere else.
+One bootstrap per account would give dev and prod a single shared execution role, so they get
+separate **qualifiers** instead:
+
+| Qualifier | Account | Boundary on `cdk-<q>-cfn-exec-role-*` |
+| --- | --- | --- |
+| `hnbmgmt` | Management | none |
+| `hnbprod` | Platform | none |
+| `hnbdev` | Platform | `cdk-dev-permissions-boundary` |
+
+**The order is not the obvious one.** `--custom-permissions-boundary` takes a policy *name*
+and does not verify the policy exists; if it is missing the bootstrap fails while creating the
+execution role. The policy is created by `BootstrapStack` (§4 C1). So the dev bootstrap must
+come *after* C1, which in turn needs the prod bootstrap to already exist.
 
 ```powershell
-npx cdk bootstrap aws://<MGMT_ACCOUNT_ID>/us-east-1 --profile mgmt
-npx cdk bootstrap aws://<PLATFORM_ACCOUNT_ID>/us-east-1 --profile platform
+# 1. Management account. Independent of everything below.
+npx cdk bootstrap aws://<MGMT_ACCOUNT_ID>/us-east-1 --profile mgmt --qualifier hnbmgmt
+
+# 2. Platform, prod qualifier. No boundary, so nothing must exist first.
+npx cdk bootstrap aws://<PLATFORM_ACCOUNT_ID>/us-east-1 --profile platform --qualifier hnbprod
+
+# 3. >>> Do §4 C1 here <<< — deploy BootstrapStack (through hnbprod).
+#     It creates cdk-dev-permissions-boundary. Confirm before continuing:
+aws iam get-policy --profile platform `
+  --policy-arn arn:aws:iam::<PLATFORM_ACCOUNT_ID>:policy/cdk-dev-permissions-boundary
+
+# 4. Platform, dev qualifier, with the boundary on its execution role.
+npx cdk bootstrap aws://<PLATFORM_ACCOUNT_ID>/us-east-1 --profile platform `
+  --qualifier hnbdev `
+  --custom-permissions-boundary cdk-dev-permissions-boundary
+
+# 5. Verify the attachment. Dev must show the boundary ARN; prod must show null.
+aws iam get-role --profile platform --query "Role.PermissionsBoundary" `
+  --role-name cdk-hnbdev-cfn-exec-role-<PLATFORM_ACCOUNT_ID>-us-east-1
 ```
+
+Qualifiers are defined once in `packages/config/src/bootstrap.ts` and consumed by both
+`infrastructure/bootstrap` and every app's synthesizer. The bootstrap template caps a
+qualifier at 10 characters. **The value passed to `--qualifier` and the value a stack
+synthesizes with must match**; nothing checks this, and a mismatch surfaces as an
+`AssumeRole` failure naming a role that was never created.
+
+Full commands, plus the manual probe proving the boundary actually denies, are in
+`infrastructure/bootstrap/README.md`.
 
 > **Correction to the roadmap:** with two accounts and GitHub OIDC roles living *in* each
 > account, **no `--trust` flag is needed.** Each account is bootstrapped standalone and
@@ -257,11 +319,16 @@ Stack contents:
   **No thumbprint needed** — AWS manages this now.
 - Three roles in the Platform account:
 
-| Role | GitHub `sub` condition | Permissions |
+| Role | GitHub `sub` condition | May assume |
 | --- | --- | --- |
-| `gha-plan` | `repo:JosephKan3/home-platform:pull_request` | ReadOnly + CDK lookup |
-| `gha-deploy-dev` | `repo:JosephKan3/home-platform:environment:dev` | Admin, with a permissions boundary **denying** `aws:ResourceTag/env = prod` |
-| `gha-deploy-prod` | `repo:JosephKan3/home-platform:environment:prod` | Admin |
+| `gha-plan` | `repo:JosephKan3/home-platform:pull_request` | ReadOnly + both qualifiers' CDK lookup roles |
+| `gha-deploy-dev` | `repo:JosephKan3/home-platform:environment:dev` | `cdk-hnbdev-*` bootstrap roles only |
+| `gha-deploy-prod` | `repo:JosephKan3/home-platform:environment:prod` | `cdk-hnbprod-*` bootstrap roles only |
+
+Plus `cdk-dev-permissions-boundary`, a fixed-name managed policy denying any action where
+`aws:ResourceTag/env = prod`. It is **not attached to any role in this stack** — a boundary
+does not follow a role chain, and `gha-deploy-dev` holds no permissions to cap. §2 A6 step 4
+attaches it to `cdk-hnbdev-cfn-exec-role-*`, the role that performs dev's mutations.
 
 Trust policy conditions — get these exactly right:
 
@@ -280,6 +347,10 @@ including ones you haven't created.
 ```powershell
 npx cdk deploy BootstrapStack --profile platform
 ```
+
+**This step sits between §2 A6 steps 2 and 4.** It needs the `hnbprod` bootstrap to exist, and
+the `hnbdev` bootstrap needs the boundary policy this stack creates. Return to A6 step 4 once
+this succeeds.
 
 ### C2. GitHub Environments
 
@@ -509,8 +580,9 @@ www.josephkan.ca  ALIAS  → dxxxx.cloudfront.net   (or a redirect to apex)
 ALIAS is required because DNS forbids a CNAME at a zone apex, and CloudFront gives you a
 hostname rather than a stable IP. ALIAS queries are free.
 
-TTL is already 300s from §1, so **rollback is five minutes** — and it does not touch
-nameservers, which is the entire point of separating D3 from G1.
+By this point the records are Route53's, and `infrastructure/dns` sets a 300s TTL on every
+one it creates. So **rollback is five minutes**, and it does not touch nameservers — which
+is the entire point of separating D3 from G1.
 
 ### G2. Verify, then decommission
 
@@ -535,7 +607,14 @@ Phase 0 is done when **all** of these are true:
 - [ ] Root credentials have not been used since §2 A5
 - [ ] No IAM users and no access keys exist in either account
 - [ ] `Resolve-DnsName josephkan.ca -Type NS` returns AWS nameservers
-- [ ] A CI test proves `gha-deploy-dev` is **denied** an action on a `env=prod` tagged resource
+- [ ] `cdk-hnbdev-cfn-exec-role-*` carries `cdk-dev-permissions-boundary` and
+      `cdk-hnbprod-cfn-exec-role-*` carries none (§2 A6 step 5)
+- [ ] The manual probe in `infrastructure/bootstrap/README.md` shows the dev execution role
+      **denied** tagging an `env=prod` resource **while succeeding** on an untagged one.
+      The control call is the point: without it the denial proves only the absence of an Allow.
+      CI asserts the offline preconditions
+      (`infrastructure/bootstrap/test/dev-permissions-boundary.test.ts`) but cannot execute an
+      IAM evaluation, so this one is signed off by hand
 - [ ] All three Aspects fail synth in their unit tests
 - [ ] A deliberate `SubnetType.PRIVATE_WITH_EGRESS` in a scratch branch **fails CI**
 - [ ] A budget alert has fired at least once (set the threshold to $0.01 temporarily to prove it)
@@ -590,27 +669,34 @@ If a Phase 0 task starts requiring one of these, the task is misscoped.
 
 Parallelism matters — Stage B needs no AWS, and DNS has multi-day waits.
 
+Stage B is already **complete** — the repo scaffold, all four CDK stacks, guardrail Aspects,
+CI workflows, and runbooks are written and tested. What remains is the manual AWS bootstrap
+and the DNS migration.
+
 ```
-Day 1     §1 Lower TTLs at GoDaddy                    ← do this first, it's free and blocks §5
-          §0 Lock the decisions
+Day 1     §0 Lock the decisions (region, account emails)
           §2 A1-A5  Org, accounts, Identity Center, SSO
-          §3 B1-B2  Repo scaffold                     ← parallel, no AWS needed
+          At GoDaddy: confirm auto-renew + transfer lock       ← no TTL change needed
 
-Day 2     §2 A6     cdk bootstrap
-          §3 B3-B5  Aspects + tests + boundaries + subtree
-          §4 C1-C4  OIDC roles, environments, CI      ← the manual→automated handoff
+Day 2     §2 A6     cdk bootstrap, steps 1-2 (BEFORE SCPs — see §10)
+          §4 C1     Deploy bootstrap stack — creates the dev boundary policy
+          §2 A6     steps 4-5: bootstrap hnbdev with the boundary, verify it attached
+          §4 C2-C4  GitHub Environments, verify CI
+                    ← the manual→automated handoff
 
-Day 3     §5 D1-D2  Hosted zone, replicate, verify
-          §5 D3     Switch nameservers at GoDaddy     ← starts the 24-48h clock
-          §6 E1-E3  SCPs, CloudTrail, GuardDuty, budgets
+Day 3     §5 D1-D2  Deploy DNS stack (origin=vercel), verify against Route53 NS
+          §5 D3     Switch nameservers at GoDaddy               ← starts the 24-48h clock
+          §6 E1-E3  SCPs, CloudTrail, budgets (manual: GuardDuty, cost tags)
 
-Day 4-5   (waiting on DNS)
-          §7 F1-F4  OANDA Lambda, static export, site stack, verify on CloudFront domain
+Day 4-5   (waiting on delegation to propagate)
+          §7 F1-F4  Seed SSM params, static export, deploy site,
+                    verify on the CloudFront domain
 
-Day 5+    §5 D4-D5  Confirm delegation, issue certificate
-          §8 G1-G2  Apex cutover, verify, decommission Vercel after 24h
+Day 5+    §5 D4-D5  Confirm delegation, certificate issues
+          §8 G1-G2  Apex cutover (origin=cloudfront), verify,
+                    decommission Vercel after 24h clean
           §9        Walk the exit criteria
 ```
 
-The critical path is DNS propagation, which is why §1 comes before everything and the
-nameserver switch happens on day 3 rather than day 5.
+The critical path is delegation propagation (24-48h), which is why D3 happens on day 3
+rather than day 5 — everything in §7 can proceed while it settles.

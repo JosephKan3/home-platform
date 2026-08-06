@@ -61,12 +61,12 @@ pnpm lint
 
 **Next actions, in order:**
 
-1. Lower the `josephkan.ca` TTLs at GoDaddy to 300s. Free, one minute, and every later DNS
-   step waits on the old TTL expiring.
+1. Read `docs/open-issues.md`. Issue 1 (the dev permissions boundary is not load-bearing)
+   and issue 6 (live DNS values unverified against GoDaddy) both need a decision before
+   they bite.
 2. Work `docs/phase-0-action-plan.md` §2 Stage A — the manual AWS Organization bootstrap.
-3. Read `docs/open-issues.md` first. Issue 1 (the dev permissions boundary is not
-   load-bearing) and issue 6 (live DNS values unverified against GoDaddy) both need a
-   decision before they bite.
+3. At GoDaddy, confirm auto-renew and transfer lock. No TTL change is needed — see the
+   correction in the action plan §1.
 
 ## What exists
 

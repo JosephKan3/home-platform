@@ -19,6 +19,15 @@ export interface EnvProfile {
   readonly progressiveDelivery: boolean;
   /** Point-in-time recovery on data stores. */
   readonly pointInTimeRecovery: boolean;
+  /**
+   * CDK bootstrap qualifier this environment deploys through.
+   *
+   * Dev and prod share one account (ADR-0001), so they share nothing else that
+   * could carry an IAM boundary. Separate qualifiers give them separate
+   * `cdk-<qualifier>-cfn-exec-role-*` roles, and the dev one is bootstrapped
+   * with `--custom-permissions-boundary`. See packages/config/src/bootstrap.ts.
+   */
+  readonly bootstrapQualifier: string;
 }
 
 export const profiles: Record<Env, EnvProfile> = {
@@ -28,6 +37,7 @@ export const profiles: Record<Env, EnvProfile> = {
     removalPolicy: RemovalPolicy.DESTROY,
     progressiveDelivery: false,
     pointInTimeRecovery: false,
+    bootstrapQualifier: "hnbdev",
   },
   prod: {
     env: "prod",
@@ -35,6 +45,7 @@ export const profiles: Record<Env, EnvProfile> = {
     removalPolicy: RemovalPolicy.RETAIN,
     progressiveDelivery: true,
     pointInTimeRecovery: true,
+    bootstrapQualifier: "hnbprod",
   },
 };
 

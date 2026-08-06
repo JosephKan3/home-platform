@@ -22,10 +22,10 @@ The only manual work in the project happens here. Keep the list short and docume
          (`josephkan.ca A 76.76.21.21`, `www CNAME cname.vercel-dns.com`).
       2. Verify against the Route53 nameservers directly with
          `Resolve-DnsName josephkan.ca -Server <ns-xxx.awsdns-xx.com>`.
-      3. Lower TTLs at GoDaddy to 300s; wait for the old TTL to expire.
-      4. Change nameservers at GoDaddy. **This is a no-op** — zone contents are identical,
-         so the site never goes down. `.ca` registry propagation takes 24-48h.
-      5. Verify delegation everywhere before proceeding.
+      3. Change nameservers at GoDaddy. **This is a no-op** — zone contents are identical,
+         so no cached answer is invalidated and the site never goes down. No TTL
+         preparation is needed. `.ca` registry propagation takes 24-48h.
+      4. Verify delegation everywhere before proceeding.
       Confirm auto-renew and transfer lock are on at GoDaddy while you're there.
 - [ ] ACM certificate in **`us-east-1`** (required for CloudFront regardless of primary
       region) covering `josephkan.ca` and `*.josephkan.ca`. DNS-validated via CDK.

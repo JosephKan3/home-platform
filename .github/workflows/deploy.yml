@@ -160,24 +160,26 @@ jobs:
       - name: Synth
         run: pnpm run synth -- --filter='!@platform/infra-org'
 
-      # NOT IMPLEMENTED, deliberately, rather than faked.
+      # STILL NOT IMPLEMENTED AS A LIVE PROBE, deliberately, rather than faked.
       #
-      # §9 requires "a CI test proves gha-deploy-dev is denied an action on an
-      # env=prod tagged resource". A live probe from this job cannot prove it:
-      # gha-deploy-dev holds no direct AWS permissions at all, only sts:AssumeRole
-      # on cdk-*-deploy-role-*. Any API call made here is denied by the absence of
-      # an Allow, not by the permissions boundary — the probe would pass while the
-      # boundary was detached.
+      # The boundary is now attached where it does work: on
+      # cdk-hnbdev-cfn-exec-role-*, via `cdk bootstrap
+      # --custom-permissions-boundary` (infrastructure/bootstrap/README.md).
+      # gha-deploy-dev is scoped to the hnbdev qualifier's roles only, so it
+      # cannot route around it.
       #
-      # Worse, the boundary caps gha-deploy-dev and does not follow the role chain
-      # into the CDK deploy role, which is where the actual mutations happen. The
-      # boundary therefore does not constrain a `cdk deploy` performed through it.
-      # Closing that gap means attaching the boundary to the CDK bootstrap deploy
-      # role (a --custom-permissions-boundary bootstrap), which is a change to
-      # infrastructure/bootstrap, not to this workflow.
+      # A probe from THIS job still cannot prove the denial. gha-deploy-dev holds
+      # no direct AWS permissions, only sts:AssumeRole, so any API call it makes
+      # is denied by the absence of an Allow — the probe would pass with the
+      # boundary detached. Proving it requires assuming the CFN execution role,
+      # which means temporarily widening that role's trust policy. That is a
+      # deliberate manual act with SSO credentials, not something CI should hold
+      # the ability to do.
       #
-      # Until then the boundary is asserted at the template level in
-      # infrastructure/bootstrap/test/github-oidc-stack.test.ts.
+      # CI asserts the offline preconditions instead:
+      #   infrastructure/bootstrap/test/dev-permissions-boundary.test.ts
+      # and the live two-call probe (control must succeed, env=prod must be
+      # denied) is run by hand once after bootstrap. See §9 exit criteria.
 
   deploy-prod:
     name: prod

@@ -104,3 +104,11 @@ destroying prod would be genuinely costly.
 - Billing granularity comes from cost allocation tags rather than per-account rollup.
   Tag enforcement therefore matters more; enforce via a CDK Aspect that fails synth on
   untagged resources.
+- **Three CDK bootstraps, not two.** The Platform account is bootstrapped twice, under
+  separate qualifiers (`hnbdev`, `hnbprod`), because the permissions boundary in mechanism 2
+  above is only load-bearing on the CDK CloudFormation execution role — a boundary caps a
+  principal and does not follow a role chain, so attaching it to the GitHub deploy role
+  constrained nothing. `cdk bootstrap --custom-permissions-boundary` attaches it to
+  `cdk-<qualifier>-cfn-exec-role-*` and nowhere else, so dev and prod need separate execution
+  roles. Only the dev one carries the boundary; prod's control is the review gate.
+  See `docs/open-issues.md` issue 1 and `infrastructure/bootstrap/README.md`.

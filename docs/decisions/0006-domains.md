@@ -99,18 +99,21 @@ www.josephkan.ca    CNAME   cname.vercel-dns.com
 Resolve-DnsName josephkan.ca -Server <ns-xxx.awsdns-xx.com>
 ```
 
-**Step 3 — Lower TTLs** on the existing GoDaddy records to 300s and wait for the old TTL to
-expire. This shortens the rollback window if anything goes wrong later.
-
-**Step 4 — Change the nameservers at GoDaddy** to the four Route53 NS records. Delegation
+**Step 3 — Change the nameservers at GoDaddy** to the four Route53 NS records. Delegation
 is a **no-op** at this point because the zone contents are identical — the site never goes
 down. Registry-level NS changes for `.ca` can take 24-48h to propagate fully.
 
-**Step 5 — Wait and verify** the delegation has taken effect everywhere before proceeding.
+> **No TTL preparation is required before this step.** An earlier draft said to lower the
+> GoDaddy TTLs to 300s first; that conflated record caching with delegation. Because both
+> nameserver sets return byte-identical answers, no cached answer is invalidated and there
+> is nothing to propagate. TTL only matters at step 5, and by then the records are Route53's
+> and already carry the 300s TTL this stack sets.
 
-**Step 6 — Cut the apex over to CloudFront** by replacing the A record with an ALIAS, once
-the AWS deployment is actually serving correctly. This is now a single, reversible record
-change with a 300s TTL, entirely inside CDK.
+**Step 4 — Wait and verify** the delegation has taken effect everywhere before proceeding.
+
+**Step 5 — Cut the apex over to CloudFront** by replacing the A record with an ALIAS, once
+the AWS deployment is actually serving correctly. This is a single, reversible record change
+with a 300s TTL, entirely inside CDK.
 
 The value of this sequence: **DNS migration and hosting migration become two independent
 steps.** If the AWS deployment has a problem, step 6 reverts in five minutes without

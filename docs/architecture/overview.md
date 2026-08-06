@@ -341,9 +341,9 @@ validation, the private zone, CDK-managed records — follows from the same dele
 
 The migration is sequenced so **DNS migration and hosting migration are independent**:
 replicate the existing Vercel records into Route53 → verify against the AWS nameservers →
-lower TTLs → delegate (a no-op, since contents are identical) → later, flip the apex to an
-ALIAS. If the AWS deployment misbehaves, that last step reverts in five minutes without
-touching nameservers.
+delegate (a no-op, since both sides return identical answers, so no TTL preparation is
+needed) → later, flip the apex to an ALIAS. If the AWS deployment misbehaves, that last step
+reverts in five minutes without touching nameservers.
 
 `.ca` was previously assumed to be a compromise versus `.com`. It isn't: CIRA has no spam
 reputation problem, and a Canadian developer running a Canadian aviation product on a `.ca`

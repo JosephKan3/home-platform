@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { App, AspectPriority, Aspects, Validations } from "aws-cdk-lib";
 import { AwsSolutionsChecks } from "cdk-nag";
-import { accounts } from "@platform/config";
+import { accounts, synthesizerFor } from "@platform/config";
 import {
   LogRetentionAspect,
   NoManagedEgressAspect,
@@ -26,8 +26,11 @@ if (origin !== "vercel" && origin !== "cloudfront") {
   throw new Error(`Invalid origin context value: ${String(origin)}. Expected vercel or cloudfront.`);
 }
 
+// The hosted zone is the live apex; it is env=prod and deploys through the prod
+// bootstrap qualifier, whose CFN execution role carries no boundary.
 new DnsStack(app, "DnsStack", {
   env: { account: accounts.platform.id, region: accounts.platform.region },
+  synthesizer: synthesizerFor("prod"),
   description: "Route53 zones, records and the platform ACM certificate (Phase 0 §5, §8).",
   origin,
   cloudFrontDomainName: app.node.tryGetContext("cloudFrontDomainName"),
