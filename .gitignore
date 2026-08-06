@@ -16,3 +16,6 @@ automation/*/dist/
 !.env.example
 *.log
 .DS_Store
+
+# Editor/extension state, not project code
+.kilo/
