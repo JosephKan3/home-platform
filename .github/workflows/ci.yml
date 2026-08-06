@@ -1,0 +1,210 @@
+name: CI
+
+# Pull request validation (Phase 0 action plan §4 C3).
+#
+#   lint -> typecheck -> test        (no AWS at all)
+#   -> synth -> cdk diff             (gha-plan, read-only)
+#
+# This workflow never deploys. The `gha-plan` role holds ReadOnlyAccess plus the
+# right to assume the CDK lookup role, and nothing else; a `cdk deploy` here
+# would fail at the AssumeRole for cdk-*-deploy-role-*.
+
+on:
+  pull_request:
+    branches: [main]
+
+# id-token: write is load-bearing. Without it GitHub does not mint an OIDC token
+# at all, and aws-actions/configure-aws-credentials fails with a message about
+# credentials rather than about permissions — which is why it costs an hour the
+# first time. pull-requests: write is what lets the diff be posted as a comment.
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+  # GitHub repository VARIABLES, not secrets. Account IDs are not sensitive, but
+  # they are kept out of git so a public repo does not hand out free recon.
+  # packages/config/src/accounts.ts throws if either is missing, so every synth
+  # and diff step needs both in the environment.
+  MGMT_ACCOUNT_ID: ${{ vars.MGMT_ACCOUNT_ID }}
+  PLATFORM_ACCOUNT_ID: ${{ vars.PLATFORM_ACCOUNT_ID }}
+  # No AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY anywhere in this repo, by design.
+
+jobs:
+  check:
+    name: lint / typecheck / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Turbo's affected-graph filter needs the base branch commit present
+          # locally to compute a merge base. A shallow clone does not have it.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Fetch base branch
+        run: >-
+          git fetch --no-tags origin
+          "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # `...[origin/<base>]` = packages changed on this branch, plus everything
+      # that depends on them. A change under packages/config still runs the whole
+      # graph, because it can affect everything (ADR-0004).
+      - name: Lint
+        run: pnpm run lint -- --filter=...[origin/${{ github.base_ref }}]
+
+      - name: Typecheck
+        run: pnpm run typecheck -- --filter=...[origin/${{ github.base_ref }}]
+
+      # Includes the three Aspect tests and the four cdk-nag assertion tests. A
+      # guardrail with no test silently rots (action plan §3 B3), so these are
+      # not optional. The cdk-nag tests run here rather than in synth-and-diff
+      # because they need no AWS credentials at all, which means a policy
+      # regression fails in the first job rather than after an OIDC assume.
+      - name: Test
+        run: pnpm run test -- --filter=...[origin/${{ github.base_ref }}]
+
+  synth-and-diff:
+    name: synth + cdk diff (gha-plan)
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # sub claim: repo:JosephKan3/home-platform:pull_request
+      # StringEquals on the full sub, never StringLike on repo:JosephKan3/*.
+      - name: Assume gha-plan
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-plan-pr-${{ github.event.pull_request.number }}
+
+      - name: Confirm the assumed identity
+        run: aws sts get-caller-identity
+
+      # These two steps are also the cdk-nag gate (ADR-0007). Every bin/app.ts
+      # registers AwsSolutionsChecks, and an error-severity finding makes
+      # `cdk synth` exit non-zero — so a policy violation fails the job here,
+      # before `cdk diff` runs, with no separate step to skip or mark
+      # continue-on-error. Do not add `|| true` or `continue-on-error` to
+      # either; that silently removes the gate while leaving the step name.
+      #
+      # GovernanceStack is excluded from the first step and synthesized
+      # separately: it requires the OU IDs created by hand in Stage A, which
+      # arrive as CDK context, not as environment variables.
+      - name: Synth + cdk-nag (all stacks except GovernanceStack)
+        run: pnpm run synth -- --filter='!@platform/infra-org'
+
+      - name: Synth + cdk-nag GovernanceStack
+        if: vars.WORKLOADS_OU_ID != '' && vars.SANDBOX_OU_ID != ''
+        run: >-
+          pnpm --filter @platform/infra-org exec cdk synth
+          -c workloadsOuId=${{ vars.WORKLOADS_OU_ID }}
+          -c sandboxOuId=${{ vars.SANDBOX_OU_ID }}
+
+      # cdk diff is scoped to the three stacks that live in the Platform account,
+      # because gha-plan lives in the Platform account. GovernanceStack targets
+      # the management account, which has no GitHub OIDC role by design — nothing
+      # runs there (action plan §2 A1, §10). It is synthesized above but not
+      # diffed; its changes are reviewed as a template diff, not an account diff.
+      - name: cdk diff
+        id: diff
+        run: |
+          set -uo pipefail
+          status=0
+
+          diff_stack() {
+            local package="$1"
+            shift
+            {
+              echo "### ${package}"
+              echo '```'
+            } >> diff.md
+            # `cdk diff` exits 0 when there are differences (only --fail changes
+            # that), so a non-zero status here means synth or the AWS call broke,
+            # which must fail the job rather than post an empty diff.
+            if ! pnpm --filter "${package}" exec cdk diff --no-color "$@" 2>&1 | tee -a diff.md; then
+              status=1
+            fi
+            echo '```' >> diff.md
+          }
+
+          : > diff.md
+          diff_stack @platform/infra-bootstrap BootstrapStack
+          diff_stack @platform/infra-dns DnsStack
+          diff_stack @platform/personal-site PersonalSiteStack -c sitePlaceholder=true
+
+          # GitHub rejects comments over 65536 characters.
+          if [ "$(wc -c < diff.md)" -gt 60000 ]; then
+            head -c 60000 diff.md > diff.trimmed.md
+            printf '\n```\n\n_Diff truncated. Run `cdk diff` locally for the full output._\n' \
+              >> diff.trimmed.md
+            mv diff.trimmed.md diff.md
+          fi
+
+          exit "${status}"
+
+      # always(): a failed diff is exactly when the output is worth reading in
+      # the PR rather than only in the job log.
+      - name: Post the diff as a PR comment
+        if: always() && hashFiles('diff.md') != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- cdk-diff -->';
+            const body = `${marker}\n## cdk diff\n\n${fs.readFileSync('diff.md', 'utf8')}`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            // Update in place so a PR with ten pushes has one diff comment, not ten.
+            const existing = comments.find(
+              (comment) => comment.user.type === 'Bot' && comment.body.startsWith(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

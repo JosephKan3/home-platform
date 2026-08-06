@@ -7,19 +7,26 @@ import {
   NoManagedEgressAspect,
   RequiredTagsAspect,
 } from "@platform/constructs";
-import { GitHubOidcStack } from "../lib/github-oidc-stack.js";
+import { SiteStack } from "../lib/site-stack.js";
 
 const app = new App();
 
-new GitHubOidcStack(app, "BootstrapStack", {
+/**
+ * `-c sitePlaceholder=true` renders the stack without a Next.js export on disk.
+ * CI uses it for synth, cdk-nag and diff; a real deploy must not.
+ */
+const usePlaceholderSource = app.node.tryGetContext("sitePlaceholder") === "true";
+const siteSourcePath = app.node.tryGetContext("siteSourcePath");
+
+new SiteStack(app, "PersonalSiteStack", {
   env: { account: accounts.platform.id, region: accounts.platform.region },
-  description: "GitHub Actions OIDC provider and deploy roles (Phase 0 §4).",
-  existingOidcProviderArn: app.node.tryGetContext("existingOidcProviderArn"),
+  description: "josephkan.ca — S3 + CloudFront with a scheduled OANDA fetcher (Phase 0 §7).",
+  envName: "prod",
+  usePlaceholderSource,
+  siteSourcePath: typeof siteSourcePath === "string" ? siteSourcePath : undefined,
 });
 
 Aspects.of(app).add(new NoManagedEgressAspect());
-// READONLY priority so this runs after the mutating Tags aspects that set the
-// tags it checks for; otherwise it fails synth on resources that are tagged.
 Aspects.of(app).add(new RequiredTagsAspect(), { priority: AspectPriority.READONLY });
 Aspects.of(app).add(new LogRetentionAspect());
 

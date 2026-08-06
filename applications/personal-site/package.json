@@ -1,24 +1,27 @@
 {
-  "name": "@platform/infra-bootstrap",
+  "name": "@platform/personal-site",
   "version": "0.0.0",
   "private": true,
-  "main": "dist/lib/github-oidc-stack.js",
-  "types": "dist/lib/github-oidc-stack.d.ts",
+  "main": "dist/lib/site-stack.js",
+  "types": "dist/lib/site-stack.d.ts",
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint bin lib --no-ignore",
+    "lint": "eslint bin lib lambda --no-ignore",
     "test": "jest --passWithNoTests",
-    "synth": "cdk synth"
+    "synth": "cdk synth -c sitePlaceholder=true"
   },
   "dependencies": {
     "@platform/config": "workspace:*",
     "@platform/constructs": "workspace:*"
   },
   "devDependencies": {
+    "@aws-sdk/client-s3": "^3.716.0",
+    "@aws-sdk/client-ssm": "^3.716.0",
     "aws-cdk-lib": "^2.173.2",
     "cdk-nag": "^3.0.2",
-    "constructs": "^10.4.2"
+    "constructs": "^10.4.2",
+    "esbuild": "^0.28.1"
   },
   "peerDependencies": {
     "aws-cdk-lib": "^2.173.2",

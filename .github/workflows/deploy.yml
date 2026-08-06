@@ -1,0 +1,320 @@
+name: Deploy
+
+# Merge to main deploys josephkan.ca with nobody touching the console
+# (Phase 0 action plan §4 C3, §9 exit criteria).
+#
+# ## Deploy order, and why it is this order
+#
+#   1. bootstrap        GitHub OIDC provider + the three gha-* roles.
+#                       NOT deployed here. It is the stack that CREATES the
+#                       identity this workflow authenticates with, so it cannot
+#                       be deployed by this workflow. It is deployed by hand,
+#                       once, with Identity Center admin credentials
+#                       (infrastructure/bootstrap/README.md). It is exposed
+#                       below only as a workflow_dispatch input, for the rare
+#                       case where a role policy changes and SSO is available.
+#
+#   2. org governance   SCPs, org CloudTrail, budgets. Second because a
+#                       region-lock SCP applied before cdk bootstrap and before
+#                       the OIDC roles exist can block the very operations that
+#                       establish the ability to deploy (§2 A6, §6, §10).
+#                       Targets the MANAGEMENT account.
+#
+#   3. dns              Hosted zone + ACM certificate. Before the site, because
+#                       the site stack reads the certificate ARN out of SSM at
+#                       /platform/acm/josephkan.ca/certificate-arn. Deploying
+#                       the site first fails on a missing parameter.
+#
+#   4. personal-site    S3 + CloudFront + the OANDA fetcher. Consumes the
+#                       certificate from step 3.
+#
+#   5. apex cutover     Route53 apex ALIAS -> CloudFront. MANUAL ONLY. See the
+#                       apex-cutover job at the bottom.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_bootstrap:
+        description: >-
+          Redeploy BootstrapStack. Normally deployed by hand with SSO admin.
+          Only useful when a gha-* role policy changed and the existing roles
+          still work well enough to deploy the change.
+        type: boolean
+        default: false
+      apex_cutover:
+        description: >-
+          Perform the Stage G1 apex cutover (josephkan.ca -> CloudFront).
+          Highest-risk moment in Phase 0. Only after the site is verified end to
+          end on the dxxxx.cloudfront.net domain, including the charts.
+        type: boolean
+        default: false
+      cloudfront_domain_name:
+        description: >-
+          dxxxx.cloudfront.net, from the PersonalSiteStack DistributionDomainName
+          output. Required when apex_cutover is true.
+        type: string
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  MGMT_ACCOUNT_ID: ${{ vars.MGMT_ACCOUNT_ID }}
+  PLATFORM_ACCOUNT_ID: ${{ vars.PLATFORM_ACCOUNT_ID }}
+
+# One deploy per environment at a time. Two overlapping runs against the same
+# account race on CloudFormation stack state and produce a rollback that is not
+# obviously anyone's fault. cancel-in-progress is deliberately false: cancelling
+# a deploy mid-CloudFormation leaves the stack in UPDATE_IN_PROGRESS.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Check
+        run: pnpm run check
+
+  # BootstrapStack is normally deployed by hand. This job exists so a role policy
+  # change can ship through the repo when SSO is not to hand, and it runs only
+  # when explicitly asked for.
+  deploy-bootstrap:
+    name: bootstrap (manual only)
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_bootstrap
+    needs: build
+    # BootstrapStack is tagged env=prod, so gha-deploy-dev's permissions boundary
+    # would deny it. It deploys with the prod role and therefore the prod gate.
+    environment: prod
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_PROD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-deploy-bootstrap
+      - name: Deploy BootstrapStack
+        run: >-
+          pnpm --filter @platform/infra-bootstrap exec cdk deploy BootstrapStack
+          --require-approval never
+
+  deploy-dev:
+    name: dev
+    needs: build
+    # `environment: dev` is what puts `environment:dev` in the OIDC sub claim.
+    # The gha-deploy-dev trust policy is StringEquals on
+    # repo:JosephKan3/home-platform:environment:dev — without this key the token
+    # carries a different sub and the AssumeRole is refused.
+    environment: dev
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_DEV_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-deploy-dev-${{ github.run_id }}
+
+      - name: Confirm the assumed identity
+        run: aws sts get-caller-identity
+
+      # ADR-0001 puts dev and prod in one account, separated by the env tag and
+      # the gha-deploy-dev permissions boundary. Every Phase 0 stack is tagged
+      # env=prod (bootstrap, dns, org, personal-site), so there is currently NO
+      # dev-scoped stack to deploy. Until one exists, this job's real job is to
+      # prove the dev credential chain works end to end before the prod gate is
+      # reached: assume the role, synthesize everything, fail here rather than
+      # after an approval.
+      #
+      # Add dev-scoped stacks to this step when they exist.
+      - name: Synth
+        run: pnpm run synth -- --filter='!@platform/infra-org'
+
+      # NOT IMPLEMENTED, deliberately, rather than faked.
+      #
+      # §9 requires "a CI test proves gha-deploy-dev is denied an action on an
+      # env=prod tagged resource". A live probe from this job cannot prove it:
+      # gha-deploy-dev holds no direct AWS permissions at all, only sts:AssumeRole
+      # on cdk-*-deploy-role-*. Any API call made here is denied by the absence of
+      # an Allow, not by the permissions boundary — the probe would pass while the
+      # boundary was detached.
+      #
+      # Worse, the boundary caps gha-deploy-dev and does not follow the role chain
+      # into the CDK deploy role, which is where the actual mutations happen. The
+      # boundary therefore does not constrain a `cdk deploy` performed through it.
+      # Closing that gap means attaching the boundary to the CDK bootstrap deploy
+      # role (a --custom-permissions-boundary bootstrap), which is a change to
+      # infrastructure/bootstrap, not to this workflow.
+      #
+      # Until then the boundary is asserted at the template level in
+      # infrastructure/bootstrap/test/github-oidc-stack.test.ts.
+
+  deploy-prod:
+    name: prod
+    needs: deploy-dev
+    # `environment: prod` is LOAD-BEARING, in two independent ways:
+    #
+    #   1. The GitHub Environment protection rule (required reviewers) is what
+    #      gates this job. There is no other approval step in this workflow.
+    #   2. The gha-deploy-prod trust policy is StringEquals on
+    #      repo:JosephKan3/home-platform:environment:prod. GitHub only puts
+    #      `environment:prod` in the OIDC sub claim when the job declares this
+    #      key. Remove it and the role cannot be assumed at all — the deploy
+    #      fails at AssumeRole, it does not silently deploy unreviewed.
+    #
+    # So deleting this line does not merely remove the review gate; it breaks
+    # authentication. That is the intended property.
+    environment: prod
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_PROD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-deploy-prod-${{ github.run_id }}
+
+      - name: Confirm the assumed identity
+        run: aws sts get-caller-identity
+
+      # Step 2 of the order at the top of this file.
+      #
+      # GovernanceStack targets the MANAGEMENT account, which deliberately has no
+      # GitHub OIDC role: nothing runs in management, because SCPs do not apply
+      # there and it is the escape hatch (§2 A1, §10). infrastructure/bootstrap
+      # creates roles in the Platform account only. Until a management-account
+      # deploy role exists, this stack is deployed by hand with `--profile mgmt`
+      # and this step stays skipped. It is written out so the order is explicit
+      # rather than implied.
+      - name: Deploy GovernanceStack (management account)
+        if: vars.AWS_DEPLOY_MGMT_ROLE_ARN != ''
+        run: |
+          echo "GovernanceStack requires a management-account role that Phase 0 does not create."
+          echo "Deploy it manually: see infrastructure/org/README.md."
+          exit 1
+
+      # Step 3. Certificate ARN lands in SSM here; the site stack reads it.
+      # `origin` defaults to vercel (cdk.json). Flipping it is the apex cutover
+      # and is NOT part of this job — see apex-cutover below.
+      - name: Deploy DnsStack
+        run: >-
+          pnpm --filter @platform/infra-dns exec cdk deploy DnsStack
+          --require-approval never
+
+      # Step 4. Needs the real Next.js static export. `-c sitePlaceholder=true`
+      # is a synth-only flag: deploying with it would publish a placeholder page
+      # to a live domain.
+      - name: Deploy PersonalSiteStack
+        run: >-
+          pnpm --filter @platform/personal-site exec cdk deploy PersonalSiteStack
+          --require-approval never
+
+      - name: Report the distribution domain
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name PersonalSiteStack \
+            --query "Stacks[0].Outputs[?OutputKey=='DistributionDomainName'].OutputValue" \
+            --output text
+
+  # Step 5 — the apex cutover. Deliberately NOT automatic.
+  #
+  # This is the single highest-risk moment in Phase 0 (§8). It moves live traffic
+  # for josephkan.ca off Vercel and onto CloudFront in one record. It must not
+  # happen because a commit landed; it happens because a human looked at the
+  # CloudFront domain, loaded the charts in a real browser, and decided.
+  #
+  # It is reversible in five minutes (300s TTLs, nameservers untouched) — see
+  # docs/runbooks/dns-rollback.md — and that reversibility is exactly why it is a
+  # separate, manually triggered event rather than a step in deploy-prod.
+  apex-cutover:
+    name: apex cutover (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.apex_cutover
+    environment: prod
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the distribution domain
+        if: inputs.cloudfront_domain_name == ''
+        run: |
+          echo "cloudfront_domain_name is required for the apex cutover."
+          echo "Take it from the PersonalSiteStack DistributionDomainName output."
+          exit 1
+
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_PROD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-apex-cutover-${{ github.run_id }}
+
+      # Diff first, and read it. It should show exactly two changes: the apex A
+      # record replaced by an ALIAS, and the www CNAME replaced by an ALIAS.
+      # Anything else moving means stop.
+      - name: Diff the cutover
+        run: >-
+          pnpm --filter @platform/infra-dns exec cdk diff DnsStack
+          -c origin=cloudfront
+          -c cloudFrontDomainName=${{ inputs.cloudfront_domain_name }}
+
+      - name: Cut the apex over to CloudFront
+        run: >-
+          pnpm --filter @platform/infra-dns exec cdk deploy DnsStack
+          --require-approval never
+          -c origin=cloudfront
+          -c cloudFrontDomainName=${{ inputs.cloudfront_domain_name }}
+
+      - name: Verify
+        run: |
+          set -uo pipefail
+          sleep 30
+          dig +short josephkan.ca
+          dig +short www.josephkan.ca
+          curl -sSI https://josephkan.ca | head -n 1
+          curl -sSI https://www.josephkan.ca | head -n 1
+          echo "Now check the certificate, the security headers and the charts in a real browser."
+          echo "Rollback if anything is wrong: docs/runbooks/dns-rollback.md"

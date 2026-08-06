@@ -1,17 +1,19 @@
 {
-  "name": "@platform/constructs",
+  "name": "@platform/infra-org",
   "version": "0.0.0",
   "private": true,
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/lib/governance-stack.js",
+  "types": "dist/lib/governance-stack.d.ts",
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src",
-    "test": "jest --passWithNoTests"
+    "lint": "eslint bin lib --no-ignore",
+    "test": "jest --passWithNoTests",
+    "synth": "cdk synth"
   },
   "dependencies": {
-    "@platform/config": "workspace:*"
+    "@platform/config": "workspace:*",
+    "@platform/constructs": "workspace:*"
   },
   "devDependencies": {
     "aws-cdk-lib": "^2.173.2",

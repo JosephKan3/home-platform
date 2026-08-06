@@ -9,6 +9,7 @@
 import { CfnOutput, Stack } from "aws-cdk-lib";
 import * as iam from "aws-cdk-lib/aws-iam";
 import { DEFAULT_OWNER, applyPlatformTags } from "@platform/config";
+import { suppressNagRules } from "@platform/constructs";
 import type { StackProps } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 
@@ -74,6 +75,20 @@ export class GitHubOidcStack extends Stack {
         resources: [this.cdkBootstrapRoleArn("lookup-role")],
       }),
     );
+    this.suppressBootstrapRoleWildcards(this.planRole, ["lookup-role"]);
+    suppressNagRules(this.planRole, [
+      {
+        id: "AwsSolutions-IAM4[Policy::arn:<AWS::Partition>:iam::aws:policy/ReadOnlyAccess]",
+        reason:
+          "ReadOnlyAccess is the intended grant, not a shortcut. This role runs " +
+          "`cdk diff` on pull requests (ADR-0007, action plan §4 C3), which must be " +
+          "able to describe any resource type the repo might add without the role " +
+          "being edited first. A customer-managed equivalent would be a hand-maintained " +
+          "copy of an AWS policy covering every read action in every service, which " +
+          "drifts silently and fails closed on new services. The role grants no write " +
+          "action and cannot assume any cdk-* deploy role, only the lookup role.",
+      },
+    ]);
 
     this.deployDevRole = new iam.Role(this, "GhaDeployDevRole", {
       roleName: "gha-deploy-dev",
@@ -141,17 +156,43 @@ export class GitHubOidcStack extends Stack {
    * and cdk-nag reviews) rather than by an AdministratorAccess attachment.
    */
   private grantCdkDeploy(role: iam.Role): void {
+    const kinds = ["deploy-role", "file-publishing-role", "image-publishing-role", "lookup-role"];
     role.addToPolicy(
       new iam.PolicyStatement({
         sid: "AssumeCdkBootstrapRoles",
         actions: ["sts:AssumeRole"],
-        resources: [
-          this.cdkBootstrapRoleArn("deploy-role"),
-          this.cdkBootstrapRoleArn("file-publishing-role"),
-          this.cdkBootstrapRoleArn("image-publishing-role"),
-          this.cdkBootstrapRoleArn("lookup-role"),
-        ],
+        resources: kinds.map((kind) => this.cdkBootstrapRoleArn(kind)),
       }),
+    );
+    this.suppressBootstrapRoleWildcards(role, kinds);
+  }
+
+  /**
+   * The `cdk-*-<kind>-*` wildcards are inherent to CDK's bootstrap role naming,
+   * not a permission that could be tightened.
+   *
+   * The finding ID carries the ARN with `${AWS::Partition}` flattened to the
+   * literal `<AWS::Partition>`, which is how cdk-nag stringifies an intrinsic.
+   * `this.partition` is a CDK token and would render as a `Fn::Join`, so it
+   * cannot be interpolated here.
+   */
+  private suppressBootstrapRoleWildcards(role: iam.Role, kinds: string[]): void {
+    suppressNagRules(
+      role,
+      kinds.map((kind) => ({
+        id:
+          "AwsSolutions-IAM5[Resource::arn:<AWS::Partition>:iam::" +
+          `${this.account}:role/cdk-*-${kind}-*]`,
+        reason:
+          `CDK names its bootstrap roles cdk-<qualifier>-${kind}-<account>-<region>. ` +
+          "Both the qualifier and the region suffix are chosen at bootstrap time, not " +
+          "here, so a literal ARN would break the moment the stack is bootstrapped with " +
+          "a non-default qualifier or deployed to a second region. The wildcard is " +
+          "bounded to this account and to the four CDK-owned role names; the alternative " +
+          "an SCP could not improve on is attaching AdministratorAccess to the GitHub- " +
+          "assumable role directly, which is what this indirection exists to avoid " +
+          "(ADR-0007, action plan §4 C2).",
+      })),
     );
   }
 
@@ -170,7 +211,7 @@ export class GitHubOidcStack extends Stack {
    * boundary and the role's own policies.
    */
   private createDevPermissionsBoundary(): iam.ManagedPolicy {
-    return new iam.ManagedPolicy(this, "DevPermissionsBoundary", {
+    const boundary = new iam.ManagedPolicy(this, "DevPermissionsBoundary", {
       managedPolicyName: "gha-deploy-dev-boundary",
       description: "Caps gha-deploy-dev: denies any action on env=prod resources.",
       statements: [
@@ -207,5 +248,27 @@ export class GitHubOidcStack extends Stack {
         }),
       ],
     });
+
+    // IAM5 reads `Action: *` / `Resource: *` as an over-broad grant. On a
+    // permissions boundary the meaning is inverted: a boundary grants nothing,
+    // it only caps, and effective permissions are the intersection of the
+    // boundary with the role's own policies. Narrowing the ceiling here would
+    // narrow what a dev deploy can do without changing what it is *allowed* to
+    // do, and would silently break future dev deploys instead of denying them.
+    // The Deny statements alongside it are where this policy does its work.
+    const boundaryReason =
+      "This is a permissions boundary, not a grant. A boundary caps effective " +
+      "permissions at the intersection of itself and the principal's own policies; " +
+      "the unrestricted Allow is the ceiling, and the two Deny statements are the " +
+      "control. Restricting the ceiling would break unrelated dev deploys without " +
+      "granting anything less. It is the mechanism ADR-0001 relies on to make one " +
+      "shared dev/prod account survivable and ADR-0005 requires for scoped " +
+      "automation roles.";
+    suppressNagRules(boundary, [
+      { id: "AwsSolutions-IAM5[Action::*]", reason: boundaryReason },
+      { id: "AwsSolutions-IAM5[Resource::*]", reason: boundaryReason },
+    ]);
+
+    return boundary;
   }
 }

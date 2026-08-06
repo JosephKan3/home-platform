@@ -19,7 +19,12 @@
     "synth": {
       "dependsOn": ["^build"],
       "outputs": ["cdk.out/**"],
-      "env": ["CDK_DEFAULT_ACCOUNT", "CDK_DEFAULT_REGION"]
+      "env": [
+        "CDK_DEFAULT_ACCOUNT",
+        "CDK_DEFAULT_REGION",
+        "MGMT_ACCOUNT_ID",
+        "PLATFORM_ACCOUNT_ID"
+      ]
     }
   }
 }

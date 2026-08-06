@@ -1,0 +1,73 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Toronto
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore
+      include: scope
+
+    groups:
+      # aws-cdk-lib (the construct library) and aws-cdk (the CLI) must stay
+      # version-aligned: a CLI older than the library refuses to deploy the
+      # cloud assembly it produces ("Cloud assembly schema version mismatch").
+      # Grouping them means one PR moves both, so they can never drift.
+      # This group takes majors too, deliberately — a CDK major arriving as two
+      # separate PRs is the failure mode this exists to prevent.
+      aws-cdk:
+        patterns:
+          - aws-cdk
+          - aws-cdk-lib
+          - "@aws-cdk/*"
+          - constructs
+        update-types:
+          - minor
+          - patch
+          - major
+
+      # Everything else: minor and patch land as one PR per week. One CI run,
+      # one review, one merge.
+      minor-and-patch:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - aws-cdk
+          - aws-cdk-lib
+          - "@aws-cdk/*"
+          - constructs
+        update-types:
+          - minor
+          - patch
+
+      # Majors are deliberately NOT grouped: each gets its own PR, because each
+      # needs its own read of a changelog. Any package not matched by a group
+      # above (a major outside the aws-cdk group) opens individually.
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Toronto
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch

@@ -1,0 +1,217 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`DnsStack in vercel mode (the live state) full template snapshot — any change to live-serving DNS shows up in review 1`] = `
+{
+  "Outputs": {
+    "OriginMode": {
+      "Description": "Where the apex points. Flipping this to cloudfront is the Stage G1 cutover.",
+      "Value": "vercel",
+    },
+    "PlatformZoneId": {
+      "Value": {
+        "Ref": "PlatformZoneF99224D1",
+      },
+    },
+    "PlatformZoneNameServers": {
+      "Description": "Set these four as the nameservers at GoDaddy — but only after Stage D2 verification passes.",
+      "Value": {
+        "Fn::Join": [
+          ",",
+          {
+            "Fn::GetAtt": [
+              "PlatformZoneF99224D1",
+              "NameServers",
+            ],
+          },
+        ],
+      },
+    },
+  },
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "ApexVercelRecord94AC6157": {
+      "Properties": {
+        "Comment": "Vercel apex. Replicated from GoDaddy so delegation is a no-op.",
+        "HostedZoneId": {
+          "Ref": "PlatformZoneF99224D1",
+        },
+        "Name": "josephkan.ca.",
+        "ResourceRecords": [
+          "76.76.21.21",
+        ],
+        "TTL": "300",
+        "Type": "A",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+    "DmarcRecord17E400DB": {
+      "Properties": {
+        "Comment": "No mail is sent from this domain, so nothing can legitimately pass DMARC.",
+        "HostedZoneId": {
+          "Ref": "PlatformZoneF99224D1",
+        },
+        "Name": "_dmarc.josephkan.ca.",
+        "ResourceRecords": [
+          ""v=DMARC1; p=reject;"",
+        ],
+        "TTL": "300",
+        "Type": "TXT",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+    "PlatformCertificateAF128867": {
+      "Properties": {
+        "DomainName": "josephkan.ca",
+        "DomainValidationOptions": [
+          {
+            "DomainName": "josephkan.ca",
+            "HostedZoneId": {
+              "Ref": "PlatformZoneF99224D1",
+            },
+          },
+        ],
+        "SubjectAlternativeNames": [
+          "*.josephkan.ca",
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "platform-dns",
+          },
+          {
+            "Key": "env",
+            "Value": "prod",
+          },
+          {
+            "Key": "Name",
+            "Value": "TestDnsStack/PlatformCertificate",
+          },
+          {
+            "Key": "owner",
+            "Value": "josephkan",
+          },
+        ],
+        "ValidationMethod": "DNS",
+      },
+      "Type": "AWS::CertificateManager::Certificate",
+    },
+    "PlatformCertificateArnParameterD2FD7203": {
+      "Properties": {
+        "Description": "ACM certificate for josephkan.ca and *.josephkan.ca.",
+        "Name": "/platform/acm/josephkan.ca/certificate-arn",
+        "Tags": {
+          "app": "platform-dns",
+          "env": "prod",
+          "owner": "josephkan",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "PlatformCertificateAF128867",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "PlatformZoneF99224D1": {
+      "Properties": {
+        "HostedZoneConfig": {
+          "Comment": "Platform + personal domain (ADR-0006). Origin mode: vercel.",
+        },
+        "HostedZoneTags": [
+          {
+            "Key": "app",
+            "Value": "platform-dns",
+          },
+          {
+            "Key": "env",
+            "Value": "prod",
+          },
+          {
+            "Key": "owner",
+            "Value": "josephkan",
+          },
+        ],
+        "Name": "josephkan.ca.",
+      },
+      "Type": "AWS::Route53::HostedZone",
+    },
+    "PlatformZoneIdParameter756D9D00": {
+      "Properties": {
+        "Description": "Route53 hosted zone ID for josephkan.ca.",
+        "Name": "/platform/dns/josephkan.ca/hosted-zone-id",
+        "Tags": {
+          "app": "platform-dns",
+          "env": "prod",
+          "owner": "josephkan",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "PlatformZoneF99224D1",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "PlatformZoneNameParameterEC788042": {
+      "Properties": {
+        "Description": "Route53 hosted zone name for josephkan.ca.",
+        "Name": "/platform/dns/josephkan.ca/hosted-zone-name",
+        "Tags": {
+          "app": "platform-dns",
+          "env": "prod",
+          "owner": "josephkan",
+        },
+        "Type": "String",
+        "Value": "josephkan.ca",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "WwwVercelRecord32FDFF79": {
+      "Properties": {
+        "Comment": "Vercel www. Replicated from GoDaddy so delegation is a no-op.",
+        "HostedZoneId": {
+          "Ref": "PlatformZoneF99224D1",
+        },
+        "Name": "www.josephkan.ca.",
+        "ResourceRecords": [
+          "cname.vercel-dns.com",
+        ],
+        "TTL": "300",
+        "Type": "CNAME",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
