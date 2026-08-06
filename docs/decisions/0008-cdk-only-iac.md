@@ -79,11 +79,33 @@ The only genuinely SLS-shaped component is the hourly notify job — a scheduled
 is roughly fifteen lines of CDK using a pattern already working in
 `applications/personal-site`.
 
-### 4. The development-loop argument has a CDK answer
+### 4. The development loop is worse, and that is an accepted cost
 
-`serverless dev` is good. So is `cdk watch` / `cdk deploy --hotswap`, which bypasses
-CloudFormation for Lambda code changes and completes in seconds. `NodejsFunction` already
-performs esbuild bundling, which covers most of what SLS packaging provides.
+An earlier draft of this ADR claimed `cdk watch` / `cdk deploy --hotswap` is equivalent to
+`serverless dev`. **That was an overstatement and is corrected here**, because the decision
+should rest on the guardrail argument rather than on a convenient claim.
+
+They are different mechanisms:
+
+| | `serverless dev` | `cdk watch --hotswap` |
+| --- | --- | --- |
+| Where code runs | **Your machine.** Real invocations are proxied to it. | **AWS.** Bundled, uploaded to S3, `UpdateFunctionCode`. |
+| Latency | Sub-second | Seconds |
+| Breakpoints | Native, local debugger | No |
+
+`serverless invoke local` and `serverless logs -t` have **no CDK equivalent at all**. The
+available substitutes are `aws logs tail --follow`, running handlers directly under a test
+runner, or adopting SAM CLI as a separate tool with a Docker dependency.
+
+What CDK does match: `NodejsFunction` performs esbuild bundling, covering most of what SLS
+packaging provides. And `cdk synth` — which runs every guardrail and cdk-nag with no AWS
+calls — is a faster and stricter feedback loop for *infrastructure* than anything SLS offers.
+
+**Accepted cost.** For the current workloads — a scheduled fetcher, static sites — the
+difference is close to zero. For a request-path service in Phase 1 it will be real. The
+mitigation is the one already applied in `applications/personal-site`: keep business logic
+in pure, testable functions outside the handler, so the fast loop is jest rather than any
+deploy. See `docs/development.md` for the full comparison.
 
 ### 5. The portfolio argument runs the other way
 
@@ -97,8 +119,12 @@ lines and applies our policy automatically" beats "I used a tool that does that.
 - One toolchain, one language, one test strategy, one CI pipeline shape.
 - Guardrails and cdk-nag apply to **every** resource without exception. ADR-0007 holds
   without a footnote.
-- Terse service definitions must be earned by writing L3 constructs. This is real work, but
-  it is the platform-engineering deliverable rather than a detour from it.
+- Terse service definitions must be earned by writing L3 constructs. This is real work, it
+  is **not yet done**, and until it is, verbosity is a debt rather than a feature —
+  `applications/personal-site/lib/site-stack.ts` is ~660 lines for one bucket, one
+  distribution, and one function. Writing a `ServerlessApi` L3 is the platform-engineering
+  deliverable that repays it.
+- The local development loop is worse than Serverless Framework's. See rationale 4.
 - No `services/` workspace layer is added. The four-layer structure in ADR-0004
   (`infrastructure/`, `applications/`, `automation/`, `packages/`) stands unchanged.
 - If a future workload genuinely fits Serverless Framework better, this ADR is superseded

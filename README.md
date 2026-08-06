@@ -33,6 +33,7 @@ no-NAT design directly.
 | **`docs/phase-0-action-plan.md`** | **Executable plan for the current phase.** |
 | **`docs/open-issues.md`** | **Known gaps found while building. Read before deploying.** |
 | **`docs/architecture/overview.md`** | **The complete design reference.** |
+| **`docs/development.md`** | **Working in this repo: the inner loop, testing, guardrails, common errors.** |
 | `docs/runbooks/` | Teardown, break-glass, DNS rollback |
 | `docs/architecture/applications.md` | NewNotams and the personal site — what they need, migration paths |
 | `docs/cost/cost-model.md` | AWS unit costs, avoidances, and traps |
@@ -45,6 +46,7 @@ no-NAT design directly.
 | `docs/decisions/0005` | AI automation boundary and approval gates |
 | `docs/decisions/0006` | Domain strategy and registrar choice |
 | `docs/decisions/0007` | Policy as code: cdk-nag and the suppression policy |
+| `docs/decisions/0008` | CDK is the only IaC tool; Serverless Framework rejected |
 
 ## Current status
 
@@ -58,6 +60,11 @@ pnpm install
 pnpm -r build && pnpm -r test        # 251 tests
 pnpm lint
 ```
+
+**Working in this repo:** see `docs/development.md`. `cdk synth` is the fast feedback loop —
+it runs the three guardrail Aspects and cdk-nag with no AWS calls and no credentials, only
+`MGMT_ACCOUNT_ID` and `PLATFORM_ACCOUNT_ID`. That document also covers where CDK's dev loop
+is genuinely worse than the Serverless Framework one it replaced (ADR-0008).
 
 **Next actions, in order:**
 

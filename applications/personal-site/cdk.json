@@ -2,7 +2,7 @@
   "app": "npx ts-node --prefer-ts-exts bin/app.ts",
   "watch": {
     "include": ["**"],
-    "exclude": ["README.md", "cdk*.json", "dist", "node_modules", "test", "lambda"]
+    "exclude": ["README.md", "cdk*.json", "dist", "node_modules", "test"]
   },
   "context": {
     "@aws-cdk/core:newStyleStackSynthesis": true,
