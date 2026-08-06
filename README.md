@@ -33,6 +33,7 @@ no-NAT design directly.
 | **`QUICKSTART.md`** | **Do the manual bootstrap, step by step. Start here.** |
 | **`docs/phase-0-action-plan.md`** | **Executable plan for the current phase.** |
 | **`docs/open-issues.md`** | **Known gaps found while building. Read before deploying.** |
+| `docs/backlog.md` | Captured but unscheduled work (e.g. migrating the LLM proxy) |
 | **`docs/architecture/overview.md`** | **The complete design reference.** |
 | **`docs/development.md`** | **Working in this repo: the inner loop, testing, guardrails, common errors.** |
 | `docs/runbooks/` | Teardown, break-glass, DNS rollback |

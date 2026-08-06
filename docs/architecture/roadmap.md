@@ -174,6 +174,10 @@ NewNotams is off Upstash. A restore has been performed and timed.
       applications fit it, so the abstraction is validated by two real consumers rather than
       being speculative.
 - [ ] FIS chaos experiment: kill an AZ, show the SLO dashboard responding.
+- [ ] **LLM proxy migration** — move the Kilo/Claude proxy off the laptop. Reuses this
+      phase's SSM secret handling, audit events, and Tailscale private access, which is why
+      it belongs here rather than earlier. The transport decision (Lambda streaming vs
+      Fargate + ALB) swings the cost by ~$27/mo. See `docs/backlog.md`.
 - [ ] Temporal only if Step Functions demonstrably can't express the workflows.
 - [ ] Qdrant only if pgvector demonstrably falls over.
 
