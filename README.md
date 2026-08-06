@@ -31,7 +31,9 @@ no-NAT design directly.
 | Path | Purpose |
 | --- | --- |
 | **`docs/phase-0-action-plan.md`** | **Executable plan for the current phase.** |
+| **`docs/open-issues.md`** | **Known gaps found while building. Read before deploying.** |
 | **`docs/architecture/overview.md`** | **The complete design reference.** |
+| `docs/runbooks/` | Teardown, break-glass, DNS rollback |
 | `docs/architecture/applications.md` | NewNotams and the personal site — what they need, migration paths |
 | `docs/cost/cost-model.md` | AWS unit costs, avoidances, and traps |
 | `docs/architecture/roadmap.md` | Phased build plan with exit criteria |
@@ -42,13 +44,40 @@ no-NAT design directly.
 | `docs/decisions/0004` | Single monorepo, enforced internal layering |
 | `docs/decisions/0005` | AI automation boundary and approval gates |
 | `docs/decisions/0006` | Domain strategy and registrar choice |
+| `docs/decisions/0007` | Policy as code: cdk-nag and the suppression policy |
 
 ## Current status
 
-**Design complete. Phase 0 not started.**
+**Phase 0 code complete. Nothing deployed to AWS yet.**
 
-First action: lower the `josephkan.ca` TTLs at GoDaddy to 300s. It's free, takes a minute,
-and every later DNS step waits on the old TTL expiring.
+All four CDK stacks build, test, and synth clean — 251 tests, zero unsuppressed cdk-nag
+errors. What remains is the manual bootstrap (Stage A) and the DNS migration.
+
+```
+pnpm install
+pnpm -r build && pnpm -r test        # 251 tests
+pnpm lint
+```
+
+**Next actions, in order:**
+
+1. Lower the `josephkan.ca` TTLs at GoDaddy to 300s. Free, one minute, and every later DNS
+   step waits on the old TTL expiring.
+2. Work `docs/phase-0-action-plan.md` §2 Stage A — the manual AWS Organization bootstrap.
+3. Read `docs/open-issues.md` first. Issue 1 (the dev permissions boundary is not
+   load-bearing) and issue 6 (live DNS values unverified against GoDaddy) both need a
+   decision before they bite.
+
+## What exists
+
+| Package | Contents |
+| --- | --- |
+| `packages/config` | Accounts, domains, env profiles, tags, SSM path contract |
+| `packages/constructs` | Three guardrail Aspects + cdk-nag suppression helpers |
+| `infrastructure/bootstrap` | GitHub OIDC provider + three scoped deploy roles |
+| `infrastructure/org` | SCPs, org CloudTrail, budgets, cost anomaly detection |
+| `infrastructure/dns` | Hosted zones, ACM cert, zero-downtime Vercel→CloudFront cutover |
+| `applications/personal-site` | S3 + CloudFront + OAC, hourly OANDA fetcher Lambda |
 
 ## Reading order
 
