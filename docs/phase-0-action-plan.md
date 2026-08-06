@@ -294,9 +294,26 @@ infrastructure/* →  applications/*     BLOCKED
 Preserve history:
 
 ```powershell
-git subtree add --prefix=applications/personal-site `
+git subtree add --prefix=applications/personal-site/site `
   https://github.com/JosephKan3/personal-website.git main
 ```
+
+> **Note the `/site` suffix.** `applications/personal-site/` already holds the CDK package
+> (`bin/`, `lib/`, `lambda/`, `test/`). The Next.js source goes in a `site/` subdirectory
+> beneath it, not at the package root — a subtree onto the package root would collide with
+> the existing files.
+>
+> Three names are in play and it is easy to confuse them:
+>
+> | Name | What it is |
+> | --- | --- |
+> | `personal-website` | the GitHub repo |
+> | `applications/personal-site/site/` | where it lands in this monorepo |
+> | `personal-page` | the existing sibling checkout on this machine |
+>
+> `applications/personal-site/README.md` documents the stack's default export path as
+> `../../../personal-page/out` (the sibling checkout). After the subtree lands, pass
+> `-c siteSourcePath=...` pointing at `site/out` instead.
 
 NewNotams stays where it is until Phase 1 — don't move it while it's still serving from
 Vercel and untouched.
@@ -394,9 +411,13 @@ www.josephkan.ca   CNAME  cname.vercel-dns.com
 Also add now, since nothing is at risk:
 
 ```
-josephkan.ca       TXT    "v=DMARC1; p=reject; rua=mailto:you@example.com"
 _dmarc.josephkan.ca TXT   "v=DMARC1; p=reject;"
 ```
+
+> An earlier draft also listed an apex `josephkan.ca TXT "v=DMARC1; ..."` record. That was
+> wrong: DMARC policy is only ever read at `_dmarc.<domain>`. An apex copy is inert, and
+> would be the first thing to drift out of sync. `infrastructure/dns` creates only the
+> `_dmarc` record, which is correct.
 
 No mail is sent from this domain — which is exactly why it should be unspoofable. Free.
 
@@ -443,7 +464,16 @@ CDK creates the validation records automatically now that Route53 holds the zone
 
 ## 6. Stage E — Governance as code
 
-Deploy through CI, from `infrastructure/org`, using the management account profile.
+**Deploy this by hand**, from `infrastructure/org`, using the management account SSO profile.
+
+> **Correction.** An earlier draft said "deploy through CI". That is not possible and never
+> was: this stack targets the **management** account, and `infrastructure/bootstrap` creates
+> GitHub OIDC roles only in the Platform account — deliberately, because ADR-0001 keeps the
+> management account empty and SCPs do not apply to it anyway. Creating a deploy role there
+> would undermine the reason it is kept empty.
+>
+> `.github/workflows/deploy.yml` contains the step with an explicit `exit 1` and an
+> explanation rather than silently skipping it. See `docs/open-issues.md` issue 3.
 
 > **Deploy this only after §2 A6 (bootstrap) and §4 (OIDC) succeed.** SCPs applied earlier can
 > block the very operations that set up your ability to deploy.

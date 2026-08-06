@@ -107,7 +107,11 @@ is denied.
 
 ## 3. `GovernanceStack` cannot be deployed by CI
 
-**Severity: low. Working as designed, but the plan didn't say so.**
+**Severity: low. RESOLVED — the documentation now matches reality.**
+
+The behaviour was always correct; only the action plan was wrong. Action plan §6 has been
+corrected to say "deploy this by hand" with the reasoning, so the contradiction is gone.
+The rest of this entry is retained because the reasoning is worth keeping.
 
 `infrastructure/org` targets the management account. `infrastructure/bootstrap` creates
 GitHub OIDC roles only in the Platform account — correctly, because ADR-0001 says nothing
@@ -118,8 +122,8 @@ Consequence: the governance stack must be deployed by hand via SSO admin. The
 than silently skipping it.
 
 This is the right tradeoff — creating a deploy role in the management account would
-undermine the reason management is kept empty — but the Phase 0 action plan §6 implies it
-is CI-deployed. **The action plan is wrong on this point; this file is correct.**
+undermine the reason management is kept empty. Action plan §6 previously implied CI
+deployment; it has been corrected.
 
 ---
 

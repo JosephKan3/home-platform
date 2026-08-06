@@ -30,6 +30,7 @@ no-NAT design directly.
 
 | Path | Purpose |
 | --- | --- |
+| **`QUICKSTART.md`** | **Do the manual bootstrap, step by step. Start here.** |
 | **`docs/phase-0-action-plan.md`** | **Executable plan for the current phase.** |
 | **`docs/open-issues.md`** | **Known gaps found while building. Read before deploying.** |
 | **`docs/architecture/overview.md`** | **The complete design reference.** |
@@ -54,6 +55,8 @@ no-NAT design directly.
 
 All four CDK stacks build, test, and synth clean — 251 tests, zero unsuppressed cdk-nag
 errors. What remains is the manual bootstrap (Stage A) and the DNS migration.
+
+**Doing that bootstrap now?** `QUICKSTART.md` is the linear, copy-pasteable version.
 
 ```
 pnpm install
