@@ -71,9 +71,9 @@ describe("GitHubOidcStack", () => {
   });
 
   describe.each([
-    ["gha-plan", `repo:JosephKan3/home-platform:pull_request`],
-    ["gha-deploy-dev", `repo:JosephKan3/home-platform:environment:dev`],
-    ["gha-deploy-prod", `repo:JosephKan3/home-platform:environment:prod`],
+    ["gha-plan", `repo:JosephKan3@54008059/home-platform@1366801384:pull_request`],
+    ["gha-deploy-dev", `repo:JosephKan3@54008059/home-platform@1366801384:environment:dev`],
+    ["gha-deploy-prod", `repo:JosephKan3@54008059/home-platform@1366801384:environment:prod`],
   ])("%s trust policy", (roleName, expectedSub) => {
     const props = trustPolicy(template, roleName);
     const doc = props["AssumeRolePolicyDocument"] as {
@@ -200,12 +200,14 @@ describe("GitHubOidcStack", () => {
     );
   });
 
-  test("uses the configured GitHub owner and repo in every sub claim", () => {
+  test("uses the configured GitHub owner, repo, and their numeric IDs in every sub claim", () => {
     const app = new App();
     const stack = new GitHubOidcStack(app, "CustomRepoStack", {
       env: { account: "222222222222", region: "us-east-1" },
       githubOwner: "SomeOrg",
       githubRepo: "other-repo",
+      githubOwnerId: 111,
+      githubRepoId: 222,
     });
     const custom = Template.fromStack(stack);
     const doc = trustPolicy(custom, "gha-deploy-dev")["AssumeRolePolicyDocument"] as {
@@ -216,7 +218,7 @@ describe("GitHubOidcStack", () => {
       Record<string, string>
     >;
     expect(condition["StringEquals"]?.[`${ISSUER}:sub`]).toBe(
-      "repo:SomeOrg/other-repo:environment:dev",
+      "repo:SomeOrg@111/other-repo@222:environment:dev",
     );
   });
 });

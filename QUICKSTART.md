@@ -1,4 +1,4 @@
-# QUICKSTART — Phase 0, start to finish
+# QUICKSTART — Phase 0, start to finish.
 
 A linear checklist for the first manual bootstrap. Follow it top to bottom. Every judgement
 call has already been made; where a step needs a value, it is marked like
@@ -401,12 +401,12 @@ issue 1).
 
 ---
 
-## 6. Deploy BootstrapStack and wire up GitHub
+## 6. Deploy BootstrapStack and wire up GitHub — done
 
 **Goal:** GitHub Actions can assume AWS roles with no stored access keys.
 
 This is the one stack deployed by hand. It creates the identity CI uses, so CI cannot
-create it. Run from `infrastructure/bootstrap`.
+create it. Deployed from `infrastructure/bootstrap`:
 
 ```powershell
 npx cdk deploy BootstrapStack --profile platform
@@ -427,7 +427,14 @@ aws iam get-policy --profile platform `
   --policy-arn "arn:aws:iam::$($env:PLATFORM_ACCOUNT_ID):policy/cdk-dev-permissions-boundary"
 ```
 
-### GitHub repository variables
+### The repo did not exist yet
+
+`JosephKan3/home-platform` did not exist before this step — created with
+`gh repo create JosephKan3/home-platform --private --source=. --remote=origin --push`, then
+made **public** (see below) once GitHub Environments' required-reviewers rule turned out to
+need it.
+
+### GitHub repository variables — set
 
 Settings → Secrets and variables → Actions → **Variables**. These are variables, not
 secrets — none of them is confidential.
@@ -442,7 +449,7 @@ secrets — none of them is confidential.
 | `WORKLOADS_OU_ID` | optional; lets CI synth `GovernanceStack` (see step 9) |
 | `SANDBOX_OU_ID` | optional; same |
 
-### GitHub Environments
+### GitHub Environments — set, and why the repo is public
 
 Settings → **Environments**:
 
@@ -453,8 +460,16 @@ Settings → **Environments**:
 > The review gate is the only thing separating prod from dev — prod's CDK execution role is
 > deliberately unbounded.
 
-**Success looks like:** three role ARNs in repository variables, two environments listed,
-and no AWS access keys anywhere in the repo or in GitHub secrets.
+**The required-reviewers protection rule needs a paid plan on a private repo, and is free on a
+public one.** GitHub returns `422 Failed to create the environment protection rule... billing
+plan` when attempted against a private repo on the free plan. Since this repo stores no
+secrets (OIDC-only auth; account IDs are non-secret reconnaissance, not credentials — see
+`docs/development.md` §6), the repo was made public rather than paying for Team, and required
+reviewers now works.
+
+**Success looks like:** three role ARNs in repository variables, two environments listed
+(`dev` with no rules, `prod` with `required_reviewers`), and no AWS access keys anywhere in
+the repo or in GitHub secrets. All verified.
 
 ---
 

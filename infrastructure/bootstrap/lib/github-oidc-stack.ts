@@ -42,6 +42,19 @@ export interface GitHubOidcStackProps extends StackProps {
   /** Monorepo name. Encoded into every trust policy `sub` claim. */
   readonly githubRepo?: string;
   /**
+   * Numeric GitHub owner ID, required by the immutable `sub` claim format.
+   *
+   * Repositories created after 2026-07-15 (this one included — created
+   * 2026-09-11) get `sub` claims of the form
+   * `repo:OWNER@OWNER-ID/REPO@REPO-ID:...` instead of the legacy
+   * `repo:OWNER/REPO:...`. Not a secret: visible via the unauthenticated
+   * `GET /repos/{owner}/{repo}` API for any public repo, unlike an AWS
+   * account ID.
+   */
+  readonly githubOwnerId?: number;
+  /** Numeric GitHub repository ID. See `githubOwnerId`. */
+  readonly githubRepoId?: number;
+  /**
    * ARN of an OIDC provider that already exists in this account.
    *
    * An AWS account can hold exactly one OIDC provider per issuer URL, and
@@ -63,7 +76,14 @@ export class GitHubOidcStack extends Stack {
 
     const owner = props.githubOwner ?? "JosephKan3";
     const repo = props.githubRepo ?? "home-platform";
-    const repoRef = `repo:${owner}/${repo}`;
+    const ownerId = props.githubOwnerId ?? 54008059;
+    const repoId = props.githubRepoId ?? 1366801384;
+    // Immutable subject format (repos created after 2026-07-15): the `repo`
+    // segment carries `OWNER@OWNER-ID/REPO@REPO-ID`, not the bare names. Using
+    // the legacy `repo:owner/repo:...` format here silently matches nothing —
+    // AssumeRoleWithWebIdentity is denied with no indication of why the sub
+    // didn't match, since IAM does not echo back the token it rejected.
+    const repoRef = `repo:${owner}@${ownerId}/${repo}@${repoId}`;
 
     const provider = props.existingOidcProviderArn
       ? iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
