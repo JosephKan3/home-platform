@@ -995,16 +995,15 @@ Phase 0 is done when **all** of these are true.
       decommission before 2026-09-13T05:02 UTC
 - [ ] Root credentials have not been used since step 3. **Not clean**: the management
       account's root password shows `password_last_used: 2026-09-11T23:29:19Z` in
-      `aws iam get-credential-report`, which falls *during* step 3 — enabling IAM Identity
-      Center for the organization for the first time required signing in as root; the
-      `joseph-kan-infra-admin` IAM user's permissions were not sufficient for that one
-      org-wide action. This is a known AWS platform limitation (Identity Center's initial
-      enablement is a highly privileged, delegated-administrator-only action that ordinary
-      IAM users cannot perform even with `AdministratorAccess`), not a process lapse — but it
-      does mean this checklist item is honestly **not met** as literally worded. Root has not
-      been used since that one required action. Update this item's wording if repeating this
-      runbook: "root not used **except for the one-time Identity Center enablement**, and not
-      used at all after that."
+      `aws iam get-credential-report`, which falls *during* step 3. Cause: a forgotten
+      password, not an AWS platform requirement — signing in as root to check/reset it was
+      incidental, not a necessary step of enabling Identity Center. `mfa_active: true` was
+      already set on this root user from before (confirmed at session start), so this was a
+      login with existing credentials, not a fresh "Forgot password" reset. No other action
+      was taken as root beyond that sign-in; Identity Center itself was enabled and
+      configured through the console while authenticated as `joseph-kan-infra-admin`. Root
+      has not been used since. Treat this as a one-time incidental use to record honestly,
+      not a process or platform issue to fix.
 - [x] No IAM users and no access keys exist in either account — in particular the interim
       `joseph-kan-infra-admin` user and its access key, created to bridge steps 1–2 before
       Identity Center existed, are **deleted** (step 3). Verified: `aws iam list-users`
