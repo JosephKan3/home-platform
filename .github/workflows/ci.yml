@@ -41,7 +41,7 @@ jobs:
     name: lint / typecheck / test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Turbo's affected-graph filter needs the base branch commit present
           # locally to compute a merge base. A shallow clone does not have it.
@@ -84,7 +84,7 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v4
 
