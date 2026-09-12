@@ -473,20 +473,41 @@ the repo or in GitHub secrets. All verified.
 
 ---
 
-## 7. Verify CI on a trivial PR
+## 7. Verify CI on a trivial PR — done, and it found two real bugs
 
 **Goal:** proof the OIDC handoff works before anything depends on it.
 
-Open a pull request with a trivial change — a typo fix in a comment is enough.
+This is exactly why the step exists: PR #9, the first PR ever opened against this repo,
+surfaced two latent bugs that a from-scratch synth/deploy never would have, because CI had
+never before run against a real branch diff.
 
-Confirm on the PR:
+**Bug 1 — `turbo --filter` never reached turbo.** `ci.yml` and `deploy.yml` ran
+`pnpm run <script> -- --filter=...`. `pnpm run <script> -- <args>` still prepends pnpm's own
+`--` before forwarding, so the actual command turbo saw was
+`turbo run <script> -- --filter=...`. Turbo treats anything after its own `--` as a
+pass-through argument for each package's underlying script, not as a turbo flag — so
+`--filter` never filtered anything at the turbo level. It fell through to every leaf package's
+bare `eslint`/`tsc`/`jest` invocation, which doesn't understand `--filter` and exits 2. Fix:
+drop the extra `--`. `pnpm run <script> --filter=...` (no `--`) lets pnpm's own arg-forwarding
+put `--filter` directly after `turbo run <script>`, where turbo consumes it itself.
 
-- The `gha-plan` role authenticates (no `configure-aws-credentials` error).
-- `cdk diff` posts.
+**Bug 2 — the OIDC trust policies used the wrong subject format.** GitHub repositories created
+after 2026-07-15 get an **immutable** `sub` claim format,
+`repo:OWNER@OWNER-ID/REPO@REPO-ID:...`, not the legacy `repo:OWNER/REPO:...`. This repo was
+created today, during step 6, so every trust policy in `GitHubOidcStack` used the legacy format
+and matched nothing. `AssumeRoleWithWebIdentity` was denied with no indication of *why* — IAM
+does not echo back a rejected token's actual claims. Fixed by adding `githubOwnerId`/
+`githubRepoId` to `GitHubOidcStack` (real values are public metadata for a public repo, not
+secrets) and redeploying `BootstrapStack`.
+
+Confirmed on the PR after both fixes:
+
+- The `gha-plan` role authenticates (`Assume gha-plan` step succeeded).
+- `cdk diff` posted as a PR comment (`<!-- cdk-diff -->` marker, from `github-actions[bot]`).
 - The plan role is read-only: nothing was created.
 - No AWS credentials exist in the repo or in GitHub secrets other than the account IDs.
 
-**Success looks like:** a green CI run with a posted diff.
+**Success looks like:** a green CI run with a posted diff. PR #9 merged with all fixes.
 
 From here, local `cdk deploy` is a break-glass action, not routine. The exceptions are
 `BootstrapStack` (already done) and `GovernanceStack` (step 9), both of which are
