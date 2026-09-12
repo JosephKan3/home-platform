@@ -171,7 +171,7 @@ These only matter if a full teardown is ever executed. Verify before relying on 
 
 ## 6. Live DNS values are asserted against config, not against reality
 
-**Severity: medium. Must be checked before the Stage D nameserver switch.**
+**Severity: resolved. Checked before Stage D3, as required.**
 
 `infrastructure/dns` tests assert the apex A record equals `vercelRecords.apexIpv4` from
 `@platform/config`. That proves the stack agrees with the config — it cannot prove the
@@ -181,9 +181,27 @@ If GoDaddy holds any record not captured in ADR-0006 — a domain-verification T
 record, anything Vercel added automatically — then replicating an incomplete zone means
 **step D3 is not a no-op and the site breaks on delegation.**
 
-**Before D3, run the side-by-side comparison in `infrastructure/dns/README.md`** against
-both GoDaddy's and Route53's nameservers and diff the full record sets. This is the single
-most important manual verification in Phase 0.
+**Result of the full manual comparison (QUICKSTART step 8c), read directly from GoDaddy's DNS
+management page:**
+
+| Type | Name | Data | In Route53 zone? |
+| --- | --- | --- | --- |
+| A | `@` | `76.76.21.21` | Yes |
+| NS | `@` | `ns73`/`ns74.domaincontrol.com` | N/A — these are GoDaddy's own delegation records, replaced by the switch itself |
+| CNAME | `www` | `cname.vercel-dns.com` | Yes |
+| CNAME | `_domainconnect` | `_domainconnect.gd.domaincontrol.com` | **No — deliberately not replicated** |
+| SOA | `@` | GoDaddy primary NS | N/A — every DNS zone has its own SOA; Route53 generates its own |
+
+No MX, no apex TXT, no CAA found (checked via `Resolve-DnsName -Type MX/TXT` and manual GoDaddy
+UI read). `_dmarc` does not exist at GoDaddy — it is a new record this migration adds, not one
+it fails to replicate.
+
+**`_domainconnect` was deliberately excluded, not missed.** It is GoDaddy's proprietary
+Domain Connect protocol record, used only for GoDaddy-hosted one-click third-party DNS setup
+(e.g. some email or app providers' "connect your domain" flows going through GoDaddy's own
+API). It has no function once GoDaddy stops being the authoritative DNS host — Domain Connect
+is a GoDaddy platform feature, not a DNS-level dependency any resolver or the live site relies
+on. Not replicating it is a no-op for D3's purposes.
 
 ---
 

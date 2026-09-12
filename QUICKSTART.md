@@ -566,19 +566,23 @@ Resolve-DnsName www.josephkan.ca -Server ns73.domaincontrol.com
 If the two do not agree on the apex A record and the `www` CNAME, **stop.** Fix
 `vercelRecords` in `@platform/config` and redeploy before going further.
 
-### 8c. Compare the FULL record set at GoDaddy
+### 8c. Compare the FULL record set at GoDaddy — done
 
 > **This is the single most important manual verification in Phase 0** (`docs/open-issues.md`
 > issue 6). The DNS tests assert that the stack agrees with `@platform/config`. They cannot
 > prove that `@platform/config` agrees with what GoDaddy is actually serving today.
->
-> Open the GoDaddy DNS management page and read **every** record, not just the apex and
-> `www`. If GoDaddy holds anything not replicated into the Route53 zone — a domain
-> verification TXT, a CAA record, an MX record, anything Vercel added automatically — then
-> the switch is **not** a no-op and the live site breaks on delegation.
->
-> Any record that exists at GoDaddy and not in Route53 must be added to the stack and
-> redeployed, then re-verified through 8b, before you touch nameservers.
+
+Read directly from the GoDaddy DNS management page: `A @ 76.76.21.21`, `NS @`
+(GoDaddy's own, replaced by the switch), `CNAME www → cname.vercel-dns.com`,
+`CNAME _domainconnect → _domainconnect.gd.domaincontrol.com`, `SOA @`. No MX, no apex TXT,
+no CAA.
+
+Every record needed for the site matches the Route53 zone from 8a. One record does **not**
+appear in Route53: `_domainconnect`, GoDaddy's proprietary Domain Connect auto-configuration
+CNAME. Decided to **not** replicate it — it is a GoDaddy platform feature (one-click DNS setup
+for third-party services through GoDaddy's own API) with no function once GoDaddy stops being
+the authoritative host. Skipping it does not make the switch a non-no-op. Full reasoning and
+the record table are in `docs/open-issues.md` issue 6.
 
 While you are in GoDaddy, **confirm auto-renew and transfer lock are ON.** A lapsed
 registration takes down both the platform and the product. That plus the record comparison
@@ -624,7 +628,7 @@ means delegation has not fully taken effect. Wait. Do not intervene manually.
 
 ---
 
-## 9. Deploy governance — SCPs, CloudTrail, budgets
+## 9. Deploy governance — SCPs, CloudTrail, budgets — done
 
 **Goal:** guardrails as code, attached to OUs.
 
@@ -671,7 +675,27 @@ is only created when `alertEmail` is supplied.
 
 **Success looks like:** three attached policies (`platform-region-lock`,
 `platform-cost-guardrails`, `platform-security-guardrails`) on both the `Workloads` and
-`Sandbox` OUs, an organization trail, a $10 budget and an anomaly monitor.
+`Sandbox` OUs, an organization trail, a $10 budget and an anomaly monitor. Confirmed via
+`aws organizations list-policies-for-target`, `aws cloudtrail describe-trails` (trail is
+named `platform-org-trail`, not literally `OrgTrail` — that's the CDK logical ID),
+`aws budgets describe-budgets`, and `aws ce get-anomaly-monitors`/`get-anomaly-subscriptions`.
+
+> **AWS auto-creates a default cost anomaly monitor the first time Cost Explorer runs**
+> (`Default-Services-Monitor`, `DIMENSIONAL`/`SERVICE`, $100/40% threshold, unrelated
+> subscriber email). Only one `DIMENSIONAL`/`SERVICE` monitor is allowed per account, so
+> `CfnAnomalyMonitor` in this stack fails with `CREATE_FAILED: Limit exceeded on dimensional
+> spend monitor creation (AlreadyExists)` if that default exists — which rolls back the
+> **entire** stack, not just the monitor, since everything is one CloudFormation transaction.
+> Fix: delete the AWS default first (subscription before monitor — the monitor can't be
+> deleted while a subscription references it), then redeploy:
+> ```powershell
+> aws ce get-anomaly-subscriptions --profile mgmt
+> aws ce delete-anomaly-subscription --subscription-arn <arn> --profile mgmt
+> aws ce get-anomaly-monitors --profile mgmt
+> aws ce delete-anomaly-monitor --monitor-arn <arn> --profile mgmt
+> ```
+> An AWS-default "My Zero-Spend Budget" may also exist alongside `platform-monthly-cost` —
+> harmless, redundant, and left alone; multiple budgets don't collide the way monitors do.
 
 > **Never shorten the region lock's global-service exemption list.** One deleted namespace
 > denies every IAM call, every Organizations call (so the SCP cannot be detached from inside
