@@ -761,9 +761,14 @@ correct way to run this step. Full verification comes in step 12, after the Lamb
 
 ---
 
-## 12. Site changes, static export, deploy, verify on CloudFront
+## 12. Site changes, static export, deploy, verify on CloudFront — done
 
 **Goal:** the site fully working on `dxxxx.cloudfront.net`, before any DNS change.
+
+Deployed to `d3on7sazi3p8l.cloudfront.net`. All of 12a–12d passed, including the deferred
+API-route deletion (12a's last cleanup) once 12d confirmed the charts render in a real
+browser. Full record of what happened, including one undocumented Next 12.1.6 bug this run
+found, is below.
 
 ### 12a. Change the site code
 
@@ -796,7 +801,7 @@ Cleanups while you are in there:
 Do **not** upgrade Next.js 12 now. It is past EOL and the upgrade is worth doing, but it must
 not block Phase 0. Schedule it for a week after the apex cutover is stable.
 
-### 12b. Build the static export
+### 12b. Build the static export — done, with one undocumented fix required
 
 Next 12, in the site repo:
 
@@ -804,6 +809,18 @@ Next 12, in the site repo:
 npm run build      # in the site repo
 npx next export    # writes ./out
 ```
+
+> **`next export` fails on this Next 12.1.6 install with every `<Image>` using the default
+> loader**, even with `images: { unoptimized: true }` set. That flag is what a later Next.js
+> version added to bypass this exact check — the installed 12.1.6 build's `next export`
+> (`node_modules/next/dist/export/index.js`) only inspects `images.loader`, never
+> `images.unoptimized`, so `unoptimized: true` alone changes nothing here. The fix: set
+> `images: { loader: "custom" }` in `next.config.js`, and pass a passthrough `loader` prop
+> (`utils/imageLoader.ts` — returns `src` unchanged, since every image here is a static import
+> already resolved to a final URL) to **every** `next/image` `<Image>` in the site: the
+> headshot and `ProjectCard` in `pages/index.tsx`/`components/ProjectCard/ProjectCard.tsx`,
+> and one hero image each in `pages/projects/{advancedRedditFilters,gptuwu,spotitube}.tsx`.
+> Missing even one still fails the export.
 
 ### 12c. Deploy the site stack
 
@@ -847,7 +864,17 @@ curl.exe https://dxxxx.cloudfront.net/data/oanda-trades.json
 `https://dxxxx.cloudfront.net` in a real browser and confirm **the charts render.** Not just
 the page — the charts.
 
-Do not go to step 13 until this passes fully.
+**All passed.** Fetcher invoke logged `oanda.published`, 88 return points, 6 instruments,
+75.58% total return, no errors. Both `data/*.json` objects landed in the site bucket. `curl`
+confirmed `200` with full security headers (CSP, HSTS, `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff`) and real data on both JSON endpoints — matching the
+compiled JS bundle's fetch calls exactly (`fetch("/data/oanda-returns.json")` /
+`fetch("/data/oanda-trades.json")`, confirmed by inspecting the deployed bundle). Charts
+confirmed rendering in a real browser. Only then were `pages/api/`, `axios`, and
+`utils/request.ts` deleted and the site redeployed (fast update, ~99s — only the S3 content
+changed, not the CloudFront distribution itself).
+
+Do not go to step 13 until this passes fully. It has.
 
 ---
 
