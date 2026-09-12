@@ -953,7 +953,7 @@ Or revert the `cdk.json` change and let CI redeploy. Nameservers are not touched
 
 ---
 
-## 14. Verify, then decommission Vercel
+## 14. Verify, then decommission Vercel — verification done, decommission timer started
 
 ```powershell
 Resolve-DnsName josephkan.ca
@@ -964,11 +964,18 @@ curl.exe -I https://www.josephkan.ca
 
 Check the certificate, the security headers, and the charts in a **real browser**.
 
-Then delete the two Next.js API routes from the site repo (12a), since the Lambda is now the
-data path.
+**All confirmed**, against authoritative nameservers directly (local DNS caching from the
+step 13 CNAME/A conflict fix otherwise shows a stale Vercel answer for a few minutes — clear
+it with `Clear-DnsClientCache` if in doubt). Both apex and `www` return `200`, full security
+headers (CSP, HSTS, `X-Frame-Options`, `X-Content-Type-Options`), valid TLS, and charts render
+in a real browser on the production domain `https://josephkan.ca`.
+
+The two Next.js API routes were already deleted in step 12d, once CloudFront verification
+passed, per the plan there.
 
 **Remove the Vercel project for the personal site only after 24 hours of clean operation.**
-Not before. Until then it is the rollback target.
+Not before. Until then it is the rollback target. Cutover completed
+2026-09-12T05:02 UTC — do not decommission Vercel before 2026-09-13T05:02 UTC.
 
 ---
 
