@@ -730,7 +730,7 @@ AWS Config is deliberately skipped. Its per-item recording charges creep and not
 
 ---
 
-## 11. Seed the OANDA SSM parameters
+## 11. Seed the OANDA SSM parameters — done
 
 **Goal:** two SecureString parameters the fetcher Lambda reads at cold start.
 
@@ -755,8 +755,9 @@ aws ssm put-parameter `
 
 Add `--overwrite` when rotating.
 
-**Success looks like:** both `put-parameter` calls return a `Version`. Full verification comes
-in step 12, after the Lambda exists.
+**Success looks like:** both `put-parameter` calls return a `Version`. Confirmed both exist as
+`SecureString`, version 1. Values were entered directly by hand, never pasted into chat — the
+correct way to run this step. Full verification comes in step 12, after the Lambda exists.
 
 ---
 
