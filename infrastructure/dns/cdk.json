@@ -23,6 +23,7 @@
     "@aws-cdk/aws-cloudfront:defaultSecurityPolicyTLSv1.2_2021": true,
     "@aws-cdk/aws-logs:logGroupPhysicalNameRestriction": true,
 
-    "origin": "vercel"
+    "origin": "cloudfront",
+    "cloudFrontDomainName": "d3on7sazi3p8l.cloudfront.net"
   }
 }
