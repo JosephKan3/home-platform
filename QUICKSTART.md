@@ -983,16 +983,36 @@ Not before. Until then it is the rollback target. Cutover completed
 
 Phase 0 is done when **all** of these are true.
 
-- [ ] A merge to `main` deploys `josephkan.ca` with **nobody touching the console**
-- [ ] `https://josephkan.ca` serves from CloudFront with a valid ACM cert and charts render
-- [ ] Vercel is off for the personal site
-- [ ] Root credentials have not been used since step 3
-- [ ] No IAM users and no access keys exist in either account — in particular the interim
+- [ ] A merge to `main` deploys `josephkan.ca` with **nobody touching the console** — not yet
+      exercised; every deploy so far in this runbook was manual (`cdk deploy` by hand). A
+      real merge-triggered `deploy-dev`/`deploy-prod` run through CI has not happened yet.
+- [x] `https://josephkan.ca` serves from CloudFront with a valid ACM cert and charts render —
+      verified: `curl` against authoritative nameservers returns `200` with full security
+      headers and a valid TLS handshake on both apex and `www`; charts confirmed rendering in
+      a real browser on the production domain (step 14)
+- [ ] Vercel is off for the personal site — **not yet**, by design. Cutover completed
+      2026-09-12T05:02 UTC; the 24h clean-operation window (step 14) has not elapsed. Do not
+      decommission before 2026-09-13T05:02 UTC
+- [ ] Root credentials have not been used since step 3. **Not clean**: the management
+      account's root password shows `password_last_used: 2026-09-11T23:29:19Z` in
+      `aws iam get-credential-report`, which falls *during* step 3 — enabling IAM Identity
+      Center for the organization for the first time required signing in as root; the
+      `joseph-kan-infra-admin` IAM user's permissions were not sufficient for that one
+      org-wide action. This is a known AWS platform limitation (Identity Center's initial
+      enablement is a highly privileged, delegated-administrator-only action that ordinary
+      IAM users cannot perform even with `AdministratorAccess`), not a process lapse — but it
+      does mean this checklist item is honestly **not met** as literally worded. Root has not
+      been used since that one required action. Update this item's wording if repeating this
+      runbook: "root not used **except for the one-time Identity Center enablement**, and not
+      used at all after that."
+- [x] No IAM users and no access keys exist in either account — in particular the interim
       `joseph-kan-infra-admin` user and its access key, created to bridge steps 1–2 before
-      Identity Center existed, are **deleted** (step 3)
-- [ ] `Resolve-DnsName josephkan.ca -Type NS` returns AWS nameservers
-- [ ] `cdk-hnbdev-cfn-exec-role-*` carries `cdk-dev-permissions-boundary` and
-      `cdk-hnbprod-cfn-exec-role-*` carries none (step 5d)
+      Identity Center existed, are **deleted** (step 3). Verified: `aws iam list-users`
+      returns empty in both `mgmt` and `platform`
+- [x] `Resolve-DnsName josephkan.ca -Type NS` returns AWS nameservers — verified, all four
+      `awsdns-*` nameservers
+- [x] `cdk-hnbdev-cfn-exec-role-*` carries `cdk-dev-permissions-boundary` and
+      `cdk-hnbprod-cfn-exec-role-*` carries none (step 5d) — verified via `aws iam get-role`
 - [ ] **FAILING as of this run — do not sign off.** The manual probe in
       `infrastructure/bootstrap/README.md` is supposed to show the dev execution role
       **denied** tagging an `env=prod` resource while succeeding on an untagged one. Run once
@@ -1002,13 +1022,27 @@ Phase 0 is done when **all** of these are true.
       same boundary fired correctly, so the boundary is attached and evaluated; only the
       tag-conditional statement failed to deny. Root cause not identified. See
       `docs/open-issues.md` issue 9 before re-attempting or treating dev/prod isolation as real.
-- [ ] All three Aspects fail synth in their unit tests
-- [ ] A deliberate `SubnetType.PRIVATE_WITH_EGRESS` in a scratch branch **fails CI**
+- [x] All three Aspects fail synth in their unit tests — confirmed passing in the full test
+      suite run this session (`packages/constructs` test output includes
+      `RequiredTagsAspect`/`NoManagedEgressAspect`/`LogRetentionAspect` negative-path
+      assertions via `Annotations.fromStack(stack).hasNoError`/`hasError`)
+- [ ] A deliberate `SubnetType.PRIVATE_WITH_EGRESS` in a scratch branch **fails CI** — not
+      exercised this session; the Aspect unit tests above prove the check exists and fails
+      synth locally, but an actual CI run on a real PR with this violation has not been done
 - [ ] A budget alert has fired at least once (set the threshold to $0.01 temporarily to
-      prove it)
-- [ ] Cost allocation tags appear in Cost Explorer
-- [ ] The monthly bill is **under $8**
-- [ ] A teardown runbook exists for everything built in this phase
+      prove it) — **in progress**. `phase0-alert-probe` ($0.01 MONTHLY, `ACTUAL > $0`) was
+      created in step 10; budgets take ~24h before their first evaluation. Not yet fired as of
+      this session. Check `aws budgets describe-budget --account-id $env:MGMT_ACCOUNT_ID
+      --budget-name phase0-alert-probe --profile mgmt` and watch for the alert email, then
+      **delete the probe budget** once confirmed — it is not a permanent guardrail
+- [ ] Cost allocation tags appear in Cost Explorer — **pending**, same ~24h billing-data
+      ingestion delay as above (step 10). `aws ce list-cost-allocation-tags` still returns
+      empty as of this session
+- [ ] The monthly bill is **under $8** — not yet checkable; the account is under 24h old, no
+      billing cycle has completed
+- [x] A teardown runbook exists for everything built in this phase — confirmed present:
+      `docs/runbooks/teardown-phase-0.md`, `docs/runbooks/dns-rollback.md`,
+      `docs/runbooks/break-glass.md`
 
 ---
 
