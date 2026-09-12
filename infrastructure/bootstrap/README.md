@@ -174,11 +174,23 @@ credentials, and record the result.
 
 **1. Create a throwaway prod-tagged resource.** An empty S3 bucket costs nothing.
 
+> **ABAC must be enabled on the probe bucket, or this test is invalid, not just for prod
+> resources but for every S3 bucket the boundary is meant to protect.** S3 general purpose
+> buckets do not evaluate `aws:ResourceTag`/`s3:BucketTag` conditions — the exact condition
+> this boundary's Deny uses — unless ABAC is explicitly enabled per bucket; it is off by
+> default. Skipping this step means the probe bucket behaves as if it has no tags at all from
+> IAM's perspective, and the test call below will wrongly succeed regardless of whether the
+> boundary itself is correct. This bit the very first run of this probe
+> (`docs/open-issues.md` issue 9). Every real bucket this boundary is meant to protect needs
+> the same `abacStatus: true` set in its CDK construct — see `packages/constructs/src/static-site/static-site.ts`
+> for the pattern.
+
 ```powershell
 $probe = "boundary-probe-$(Get-Random)"
 aws s3api create-bucket --profile platform --bucket $probe --region us-east-1
 aws s3api put-bucket-tagging --profile platform --bucket $probe `
   --tagging 'TagSet=[{Key=env,Value=prod}]'
+aws s3api put-bucket-abac --profile platform --bucket $probe --abac-status Status=Enabled
 ```
 
 **2. Assume the dev CFN execution role.** Its trust policy names
@@ -219,10 +231,21 @@ aws s3api put-bucket-tagging --bucket $probe --tagging 'TagSet=[{Key=probe,Value
 | Call | Required result | If it differs |
 | --- | --- | --- |
 | tag the untagged control bucket | succeeds | The role lacks `AdministratorAccess`; the probe proves nothing. Stop. |
-| tag the `env=prod` bucket | `AccessDenied` | The boundary is not attached, or the Deny condition is wrong. Re-run step 4. |
+| tag the `env=prod` bucket | `AccessDenied` naming `cdk-dev-permissions-boundary` | See below. |
 
-`AccessDenied` on the second call *while the first succeeded* is the evidence: the same role,
-the same action, differing only by the target's `env` tag.
+`AccessDenied ... with an explicit deny in a permissions boundary: arn:...:policy/cdk-dev-permissions-boundary`
+on the second call *while the first succeeded* is the evidence: the same role, the same
+action, differing only by the target's `env` tag and ABAC status.
+
+**Do not confuse this with `BadRequest`.** If ABAC is enabled on the probe bucket (step 1),
+`PutBucketTagging` there fails for *every* caller, boundary or not, with `An error occurred
+(BadRequest) ... This S3 general purpose bucket has attribute-based access control (ABAC)
+enabled. To add tags to this bucket, initiate a TagResource request.` That is expected and
+harmless noise from the API's own deprecation, not the boundary — the ABAC toggle is exactly
+what makes the boundary's Deny fire in the first place, so seeing `AccessDenied` naming the
+boundary (not `BadRequest`) is what confirms the boundary evaluated before that
+deprecation check did. If you see `BadRequest` **without** the boundary named in it, IAM never
+reached the Deny statement — re-check the boundary's attachment and condition, not ABAC.
 
 **4. Clean up. Do not skip this — step 2 widened a trust policy.**
 

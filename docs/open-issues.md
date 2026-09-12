@@ -245,11 +245,37 @@ The site repo also needs these cleanups before `git subtree` migration, all docu
 
 ---
 
-## 9. The dev permissions boundary did not deny a live `env=prod` S3 call
+## 9. The dev permissions boundary did not deny a live `env=prod` S3 call — resolved
 
-**Severity: high. The mechanism ADR-0001 relies on to share one account between dev and prod
-is unverified — the one probe designed to prove it works instead showed it does not, for at
-least one action.**
+**Severity: was high, now resolved.** Root cause found and fixed: S3 general purpose buckets
+do not evaluate `aws:ResourceTag`/`s3:BucketTag` conditions at all until ABAC is explicitly
+enabled per bucket — a default-off S3 setting, unrelated to IAM policy correctness. This is
+documented by AWS itself, not a bug:
+
+> `aws:ResourceTag/key-name` ... S3 evaluates this condition key only after you enable ABAC on
+> your bucket.
+> — [Using tags with S3 general purpose buckets §ABAC for buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/buckets-tagging.html#abac-for-buckets)
+
+Fixed by adding `abacStatus: true` to both S3 buckets in `packages/constructs/src/static-site/static-site.ts`
+(the site bucket and its access-log bucket — the only Platform-account buckets the dev boundary
+is meant to protect; `governance-stack.ts`'s buckets are in the management account, which the
+dev boundary never applies to, and were deliberately left alone). Redeployed
+`PersonalSiteStack`; confirmed `AbacStatus: Enabled` in the live CloudFormation template.
+Re-ran the exact probe from the original investigation below and it now denies correctly:
+`s3:PutBucketTagging` on the `env=prod` site bucket returns
+`AccessDenied ... with an explicit deny in a permissions boundary:
+arn:aws:iam::696835009133:policy/cdk-dev-permissions-boundary`, while the control call
+(tagging an untagged bucket) still succeeds. `s3:TagResource`/`UntagResource` — the APIs AWS
+says CloudFormation and the console already use by default once ABAC is on — were not
+independently re-tested with a fixed CLI (the installed `aws-cli/2.23.11` predates these
+subcommands), but the legacy `PutBucketTagging` denial is definitive: the condition key is now
+being evaluated at all, which was the entire gap.
+
+No other services were affected by this bug: the cross-service control test below (SSM
+Parameter Store) already showed `aws:ResourceTag` correctly enforced without any special
+per-resource opt-in, confirming this is an S3-specific default, not a boundary or IAM defect.
+
+The original investigation is preserved below for the record.
 
 ### What happened
 
@@ -297,16 +323,22 @@ Confirmed:
 - The boundary is being evaluated at all (the unconditional Deny fired).
 - `s3:PutBucketTagging` supports the condition key used.
 
-Not confirmed — this is the open question:
-- **Why the tag-conditional Deny did not fire against a live call.** No root cause was
-  identified. Candidates not yet ruled out: an S3-specific interaction between
-  `aws:ResourceTag` evaluation and permissions boundaries specifically (as opposed to
-  identity-based policies, where `aws:ResourceTag` is well-documented and commonly used); some
-  form of evaluation caching or eventual consistency on the bucket-level tag-set longer than
-  60 seconds; or a nuance of how S3 bucket (as opposed to object) tags are surfaced to the IAM
-  authorization request for `PutBucketTagging` specifically.
-- Whether this failure is S3-specific or would reproduce on other tag-taggable services
-  (untested — the probe only exercises S3, per the README).
+Root cause, found in the follow-up investigation: **S3 general purpose buckets do not evaluate
+`aws:ResourceTag`/`s3:BucketTag` conditions unless ABAC is explicitly enabled on that specific
+bucket** — a separate, default-off, per-bucket S3 setting, not a permissions-boundary or IAM
+defect. This was confirmed two ways:
+- A cross-service control test: the identical boundary, on the identical role, correctly
+  denied `ssm:PutParameter` and `ssm:AddTagsToResource` against an SSM Parameter Store
+  parameter tagged `env=prod` — proving `aws:ResourceTag` evaluation itself works fine outside
+  S3's own bucket-tagging path.
+- AWS's own documentation, which states plainly that S3 evaluates `aws:ResourceTag` for bucket
+  actions "only after you enable ABAC on your bucket," and that general purpose buckets ship
+  with ABAC off by default (access points and directory buckets get it on by default, general
+  purpose buckets do not).
+
+This resolves both open questions from the original investigation: the failure is S3-specific
+(not systemic — SSM proved the pattern works), and the specific missing piece was per-bucket
+ABAC enablement, not a boundary, tag-propagation, or Resource-scoping issue.
 
 ### Why this matters
 
@@ -329,21 +361,29 @@ tags via at least this one action, and possibly others sharing the same conditio
 - Nothing has been deployed into either qualifier yet (`docs/open-issues.md` issue 2 — no
   dev-scoped stacks exist), so no real dev workload has exercised this gap in practice.
 
-### Suggested next steps (not yet done)
+### Fix applied
 
-- Re-run the probe against a different action/resource type (e.g. an EC2 instance tag, a
-  Secrets Manager secret tag) to determine whether this is S3-specific or systemic.
-- Search AWS re:Post / known-issues for `aws:ResourceTag` + permissions boundary + S3 bucket
-  tagging specifically, since object-tag conditions (`s3:ExistingObjectTag`) have documented
-  quirks (see the "not supported for PUT/DELETE Object" note in
-  https://docs.aws.amazon.com/AmazonS3/latest/userguide/tagging-and-policies.html) that may
-  have a bucket-tag analogue undocumented in the generic condition-key list.
-- Consider whether resource-level ARN scoping (e.g. `Resource: "arn:aws:s3:::*"` instead of
-  `Resource: "*"`) changes evaluation — the current statement's `Resource: "*"` combined with a
-  tag condition is the exact pattern documented as fully supported, so this is a low-probability
-  lead but untested.
-- Until root-caused, treat the dev/prod account-sharing boundary as **advisory, not
-  load-bearing**, for any action pattern not yet individually verified. The Phase 0 exit
-  checklist item "the manual probe... shows the dev execution role denied" cannot be checked
-  off as currently worded; either the probe needs to pass, or the checklist and ADR-0001 need
-  to describe the residual risk explicitly.
+- `abacStatus: true` added to both `s3.Bucket` constructs in
+  `packages/constructs/src/static-site/static-site.ts` (site bucket, access-log bucket).
+- `packages/constructs` rebuilt (the fix initially had no effect because `applications/personal-site`
+  resolves `@platform/constructs` via its stale compiled `dist/`, not `src/` — a reminder that
+  editing this package's source alone is not enough; `pnpm run build` in `packages/constructs`
+  is required before the change reaches any consumer).
+- `PersonalSiteStack` redeployed; `cdk diff` showed exactly `[+] AbacStatus: Enabled` on both
+  buckets, nothing else.
+- Full fix re-verified against the exact original probe: `s3:PutBucketTagging` on the
+  `env=prod` site bucket now denies with the boundary's ARN named in the error; the control
+  call against an untagged bucket still succeeds.
+- `governance-stack.ts`'s two buckets (management account, org trail + its access log) were
+  deliberately left without `abacStatus` — the dev boundary never applies to the management
+  account, so ABAC there would fix nothing and only adds unrelated behavior-change risk.
+- Any *new* S3 bucket construct added to a Platform-account stack in the future needs the same
+  `abacStatus: true` to be covered by this boundary — it is not a stack-wide or account-wide
+  setting, it is per-bucket. There is no Aspect enforcing this yet; consider one if more
+  S3-buckets-outside-`static-site.ts` appear.
+
+### Phase 0 exit checklist
+
+This issue no longer blocks the exit checklist item about the manual probe. Re-run the probe
+in `infrastructure/bootstrap/README.md` (or trust this issue's re-verification, which used the
+identical steps) and update `QUICKSTART.md`'s checklist entry from "FAILING" to passing.

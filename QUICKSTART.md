@@ -1012,15 +1012,17 @@ Phase 0 is done when **all** of these are true.
       `awsdns-*` nameservers
 - [x] `cdk-hnbdev-cfn-exec-role-*` carries `cdk-dev-permissions-boundary` and
       `cdk-hnbprod-cfn-exec-role-*` carries none (step 5d) — verified via `aws iam get-role`
-- [ ] **FAILING as of this run — do not sign off.** The manual probe in
-      `infrastructure/bootstrap/README.md` is supposed to show the dev execution role
-      **denied** tagging an `env=prod` resource while succeeding on an untagged one. Run once
-      after both qualifiers were bootstrapped: the control call succeeded (proves the role has
-      `AdministratorAccess`) but the `env=prod` tagging call also succeeded — no `AccessDenied`,
-      confirmed via CloudTrail across three attempts. An unrelated, unconditional Deny in the
-      same boundary fired correctly, so the boundary is attached and evaluated; only the
-      tag-conditional statement failed to deny. Root cause not identified. See
-      `docs/open-issues.md` issue 9 before re-attempting or treating dev/prod isolation as real.
+- [x] The manual probe in `infrastructure/bootstrap/README.md` shows the dev execution role
+      **denied** tagging an `env=prod` resource while succeeding on an untagged one — **now
+      passing**. First run failed (`docs/open-issues.md` issue 9): S3 general purpose buckets
+      silently ignore `aws:ResourceTag` conditions unless ABAC is explicitly enabled per
+      bucket, a default-off S3 setting AWS documents plainly, unrelated to the boundary policy
+      itself — confirmed via a cross-service control test against SSM Parameter Store, where
+      the identical boundary correctly denied without any such opt-in. Fixed by adding
+      `abacStatus: true` to both S3 buckets in `static-site.ts`; re-ran the exact probe and
+      confirmed `PutBucketTagging` on the `env=prod` site bucket now returns `AccessDenied`
+      naming the boundary, while the untagged control bucket still succeeds. See issue 9 for
+      the full investigation and fix.
 - [x] All three Aspects fail synth in their unit tests — confirmed passing in the full test
       suite run this session (`packages/constructs` test output includes
       `RequiredTagsAspect`/`NoManagedEgressAspect`/`LogRetentionAspect` negative-path

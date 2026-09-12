@@ -171,6 +171,13 @@ export class StaticSite extends Construct {
       versioned: true,
       removalPolicy: profile.removalPolicy,
       autoDeleteObjects: profile.removalPolicy === RemovalPolicy.DESTROY,
+      // S3 only evaluates aws:ResourceTag/s3:BucketTag conditions on general
+      // purpose buckets once ABAC is explicitly enabled per bucket -- without
+      // this, the dev permissions boundary's `env=prod` Deny is silently a
+      // no-op for every action on this bucket (docs/open-issues.md issue 9).
+      // CloudFormation tags via TagResource/UntagResource by default already,
+      // so this has no effect on how CDK itself manages tags.
+      abacStatus: true,
     });
 
     // Origin Access Control, never the legacy Origin Access Identity: OAC signs
@@ -265,6 +272,8 @@ export class StaticSite extends Construct {
           expiration: Duration.days(ACCESS_LOG_RETENTION_DAYS),
         },
       ],
+      // See the site bucket's abacStatus comment above.
+      abacStatus: true,
     });
 
     suppressNagRules(bucket, [
