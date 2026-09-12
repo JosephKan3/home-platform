@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-08-05
 - Revises: earlier five-account proposal
+- Implemented: 2026-09-11 — organization created, all three OUs exist and are empty.
+  Identifiers live in `.env.local` (gitignored); see `docs/development.md` §6.
 
 ## Context
 
@@ -29,6 +31,44 @@ Root (management account)
 
 The **Platform** account holds everything: VPC, Lambda, Fargate, RDS, S3, CloudFront,
 Route53 records, ECR, Tailscale router.
+
+### Why the OUs are not `dev` / `qa` / `prod`
+
+This is the most common objection to the tree above, so it is recorded rather than assumed.
+
+**An OU's only function is to attach SCPs.** It is a policy boundary, not a label, not a
+folder for tidiness, and not an environment. The correct grouping key is therefore "which
+guardrails must these accounts inherit", not "where is this code in its lifecycle".
+
+Applying that key:
+
+| OU | Distinct policy needs |
+| --- | --- |
+| `Security` | Audit and log-archive accounts. Deny deleting trails or detectors, deny everything that is not security tooling. Different from — and stricter than — a workload account. |
+| `Workloads` | Region lock, no NAT/TGW, no IAM users, instance-family denies, deny leaving the org. |
+| `Sandbox` | Deliberately looser than `Workloads`, with a tighter budget, so experiments are not fought by the workload guardrails. |
+
+`dev`, `qa` and `prod` fail that test: they want the *same* SCPs as each other. Splitting
+them into OUs means attaching three identical policy sets and gaining nothing, while
+spending the one structural axis Organizations gives us on a distinction that policy does
+not care about.
+
+What people actually want from `dev`/`qa`/`prod` is an **account** boundary, and the way to
+express that is accounts inside `Workloads`:
+
+```
+Workloads
+├── Platform-Dev
+└── Platform-Prod
+```
+
+That is exactly the growth path below. The environment distinction lives at the account
+level where it has teeth, and the OU keeps supplying one inherited guardrail set to both.
+The decision to run dev and prod in a *single* account today is a separate, cost-driven
+compromise, documented above and in the deviations table — not an argument about OU shape.
+
+The empty `Security` and `Sandbox` OUs cost nothing and exist now so that adding an account
+later is a `move-account` call rather than a policy redesign.
 
 ### Environment separation inside one account
 
@@ -58,7 +98,9 @@ The escape hatch is designed in: see "Growth path".
 Nothing here needs to be rewritten to add accounts. Concretely:
 
 - **SCPs attach to OUs, not accounts.** A new account dropped into `Workloads` inherits
-  every guardrail immediately.
+  every guardrail immediately. This is the payoff of grouping by policy rather than by
+  environment: graduating prod is a new account in an existing OU, not a new OU with a
+  copied policy set.
 - **Account IDs are config, not code.** A single `accounts.ts` map drives every stack:
 
   ```ts

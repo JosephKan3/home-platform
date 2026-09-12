@@ -19,6 +19,16 @@ aws sts get-caller-identity --profile mgmt
 
 Both must return an `assumed-role/AWSReservedSSO_AdministratorAccess/...` ARN.
 
+Load the account and OU identifiers from `.env.local` (gitignored) into the session; every
+step below needs them:
+
+```powershell
+Get-Content .env.local | Where-Object { $_ -match '^\s*[^#\s]' } | ForEach-Object {
+  $k, $v = $_ -split '=', 2
+  Set-Item -Path "env:$($k.Trim())" -Value $v.Trim()
+}
+```
+
 ---
 
 ## The three traps, before anything else
@@ -34,7 +44,6 @@ for as long as teardown takes.
 Flip `origin` back to `vercel` and redeploy **first**:
 
 ```powershell
-$env:PLATFORM_ACCOUNT_ID = "<platform account id>"
 npx cdk deploy DnsStack --profile platform -c origin=vercel
 ```
 
@@ -134,7 +143,6 @@ The slowest step. Budget 20-40 minutes, most of it waiting on CloudFront.
 
 ```powershell
 cd applications/personal-site
-$env:PLATFORM_ACCOUNT_ID = "<platform account id>"
 npx cdk destroy PersonalSiteStack --profile platform -c sitePlaceholder=true
 ```
 
@@ -247,13 +255,13 @@ propagation at GoDaddy.
 
 ```powershell
 cd ../org
-$env:MGMT_ACCOUNT_ID = "<management account id>"
 npx cdk destroy GovernanceStack --profile mgmt `
-  -c workloadsOuId=ou-xxxx-xxxxxxxx `
-  -c sandboxOuId=ou-xxxx-xxxxxxxx
+  -c workloadsOuId=$env:WORKLOADS_OU_ID `
+  -c sandboxOuId=$env:SANDBOX_OU_ID
 ```
 
-The OU IDs are still required: synth runs before destroy and throws without them.
+The OU IDs are still required: synth runs before destroy and throws without them. They live
+in `.env.local`; load it into the session as shown at the top of this runbook.
 
 This removes the three SCPs (detaching them first, including any still attached from trap 2),
 the organization CloudTrail, the budget, and the anomaly monitor. It leaves:

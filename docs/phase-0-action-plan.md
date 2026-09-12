@@ -19,8 +19,8 @@ These are cheap now and expensive later. Decide, write down, move on.
 | --- | --- | --- |
 | **Primary region** | **`us-east-1`** | Baked into every stack, every ARN, every SSM path |
 | **Identity Center region** | **`us-east-1`** (must match) | Changing requires deleting the entire Identity Center instance and all assignments |
-| **Management account email** | `you+aws-mgmt@gmail.com` | Must be globally unique across all of AWS, permanently |
-| **Platform account email** | `you+aws-platform@gmail.com` | Same. Plus-addressing works; use a mailbox you control forever |
+| **Management account email** | `josephkan3+infra@gmail.com` (settled) | Must be globally unique across all of AWS, permanently |
+| **Platform account email** | `josephkan3+platform@gmail.com` | Same. Plus-addressing works; use a mailbox you control forever |
 | **Monorepo name** | `home-platform` | Encoded in every OIDC trust policy `sub` claim |
 | **GitHub org vs personal** | Personal (`JosephKan3`) is fine | Moving to an org later changes every trust policy |
 
@@ -94,10 +94,22 @@ this is code. Keep a written log of exactly what you clicked.
 > **Critical property:** SCPs **do not apply to the management account.** No guardrail you
 > write in §6 will constrain it. This is precisely why nothing runs there.
 
+**Done 2026-09-11.** Account `joseph_kan_infra` (`josephkan-infra`,
+`josephkan3+infra@gmail.com`), root MFA enabled. An IAM admin user
+`joseph-kan-infra-admin` was created with a static access key so the CLI could drive A2
+before Identity Center exists. **That user and key are interim and are deleted in A4.**
+
 ### A2. Create the Organization
 
 Console → Organizations → Create organization → **All features** (not consolidated billing
 only; SCPs require all features).
+
+Note that current AWS consoles create organizations with all features by default, so there
+may be nothing to choose. Confirm rather than assume — `FeatureSet` must read `ALL`:
+
+```powershell
+aws organizations describe-organization --profile mgmt --query "Organization.FeatureSet"
+```
 
 Create OUs:
 
@@ -108,16 +120,21 @@ Root
 └── Sandbox      (empty — reserved)
 ```
 
-Creating the empty OUs now costs nothing and means ADR-0001's growth path is real rather than
-aspirational.
+The OUs are **policy boundaries, not environment labels** — see ADR-0001 for why this is not
+`dev` / `qa` / `prod`. Creating the empty ones now costs nothing and means ADR-0001's growth
+path is real rather than aspirational.
+
+**Done 2026-09-11.** Organization created, feature set `ALL`, SCP policy type enabled. All
+three OUs exist and are empty. IDs are in `.env.local` (gitignored).
 
 ### A3. Create the Platform account
 
 Organizations → Add account → Create account.
 
 - Name: `Platform`
-- Email: the plus-addressed address decided in §0
+- Email: `josephkan3+platform@gmail.com`, the plus-addressed address decided in §0
 - Move it into the `Workloads` OU immediately.
+- Record its ID as `PLATFORM_ACCOUNT_ID` in `.env.local`.
 
 Then **take control of its root user**: sign out, "Forgot password" against the Platform
 account email, set a password, enable MFA, and never use it again.
@@ -136,6 +153,9 @@ account email, set a password, enable MFA, and never use it again.
    - `Billing` — for cost work without admin rights
 4. Assign yourself `AdministratorAccess` on **both** accounts.
 5. Note the start URL (`https://d-xxxxxxxxxx.awsapps.com/start`).
+6. **Delete the interim IAM user and access key from A1** (`joseph-kan-infra-admin`), which
+   existed only to bridge A2–A3. Standing keys are the thing Identity Center replaces, and
+   "no IAM users and no access keys" is a Phase 0 exit criterion.
 
 ### A5. Switch off root, switch on SSO
 
@@ -175,12 +195,21 @@ and does not verify the policy exists; if it is missing the bootstrap fails whil
 execution role. The policy is created by `BootstrapStack` (§4 C1). So the dev bootstrap must
 come *after* C1, which in turn needs the prod bootstrap to already exist.
 
+> **`--qualifier` does not rename the CloudFormation stack** — `cdk bootstrap` always creates
+> a stack literally named `CDKToolkit` unless `--toolkit-stack-name` is also given. Two
+> qualifiers bootstrapped into the same account and region without distinct
+> `--toolkit-stack-name` values collide on that one stack, and the second bootstrap **deletes**
+> the first qualifier's roles while "updating" it. Steps 2 and 4 below are both in the Platform
+> account, so both need distinct names.
+
 ```powershell
-# 1. Management account. Independent of everything below.
+# 1. Management account. Independent of everything below. No suffix needed: it is the only
+#    qualifier ever bootstrapped into this account and region.
 npx cdk bootstrap aws://<MGMT_ACCOUNT_ID>/us-east-1 --profile mgmt --qualifier hnbmgmt
 
 # 2. Platform, prod qualifier. No boundary, so nothing must exist first.
-npx cdk bootstrap aws://<PLATFORM_ACCOUNT_ID>/us-east-1 --profile platform --qualifier hnbprod
+npx cdk bootstrap aws://<PLATFORM_ACCOUNT_ID>/us-east-1 --profile platform --qualifier hnbprod `
+  --toolkit-stack-name CDKToolkit-hnbprod
 
 # 3. >>> Do §4 C1 here <<< — deploy BootstrapStack (through hnbprod).
 #     It creates cdk-dev-permissions-boundary. Confirm before continuing:
@@ -190,7 +219,8 @@ aws iam get-policy --profile platform `
 # 4. Platform, dev qualifier, with the boundary on its execution role.
 npx cdk bootstrap aws://<PLATFORM_ACCOUNT_ID>/us-east-1 --profile platform `
   --qualifier hnbdev `
-  --custom-permissions-boundary cdk-dev-permissions-boundary
+  --custom-permissions-boundary cdk-dev-permissions-boundary `
+  --toolkit-stack-name CDKToolkit-hnbdev
 
 # 5. Verify the attachment. Dev must show the boundary ARN; prod must show null.
 aws iam get-role --profile platform --query "Role.PermissionsBoundary" `

@@ -27,9 +27,7 @@ This is the single most useful command in the repo, and it is the one that has n
 Serverless Framework equivalent worth the comparison.
 
 ```powershell
-$env:MGMT_ACCOUNT_ID     = "<12 digits>"
-$env:PLATFORM_ACCOUNT_ID = "<12 digits>"
-
+# Account IDs come from .env.local — see §6 for the loader.
 pnpm --filter @platform/personal-site synth
 pnpm --filter @platform/infra-dns     synth
 ```
@@ -729,14 +727,27 @@ In CI they are GitHub repository **variables**, not secrets (`ci.yml`).
 `packages/config/src/accounts.ts` reads them lazily through a getter and validates the
 12-digit shape, so synthesizing one stack does not require every account ID to be present.
 
-Locally:
+Locally they live in **`.env.local`**, which is gitignored. `.env.example` is the tracked
+template — copy it and fill in the real values:
 
 ```powershell
-$env:MGMT_ACCOUNT_ID     = "<12 digits>"
-$env:PLATFORM_ACCOUNT_ID = "<12 digits>"
+Copy-Item .env.example .env.local
 ```
 
-Put these in your shell profile. You will need them for every synth, diff and deploy.
+It also holds the organization and OU identifiers that `GovernanceStack` needs as context
+(`ORGANIZATION_ID`, `WORKLOADS_OU_ID`, `SANDBOX_OU_ID`), for the same reason and with the
+same gitignore rule.
+
+Load it into a session:
+
+```powershell
+Get-Content .env.local | Where-Object { $_ -match '^\s*[^#\s]' } | ForEach-Object {
+  $k, $v = $_ -split '=', 2
+  Set-Item -Path "env:$($k.Trim())" -Value $v.Trim()
+}
+```
+
+Put that loader in your shell profile. You will need these for every synth, diff and deploy.
 
 ### The turbo `env` allowlist
 

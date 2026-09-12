@@ -118,25 +118,30 @@ Without it CloudFormation fails when creating the trail.
 
 ## Deploy
 
+Account and OU identifiers live in `.env.local` at the repo root (gitignored — see
+`docs/development.md` §6). With that loaded into the session:
+
 ```powershell
-$env:MGMT_ACCOUNT_ID = "<management account id>"
 npx cdk deploy GovernanceStack --profile mgmt `
-  -c workloadsOuId=ou-xxxx-xxxxxxxx `
-  -c sandboxOuId=ou-xxxx-xxxxxxxx `
-  -c organizationId=o-xxxxxxxxxx `
-  -c alertEmail=you@example.com `
-  -c budgetAccountId=<platform account id>
+  -c workloadsOuId=$env:WORKLOADS_OU_ID `
+  -c sandboxOuId=$env:SANDBOX_OU_ID `
+  -c organizationId=$env:ORGANIZATION_ID `
+  -c alertEmail=josephkan3+aws-alerts@gmail.com `
+  -c budgetAccountId=$env:PLATFORM_ACCOUNT_ID
 ```
 
 `workloadsOuId` and `sandboxOuId` are required; synth fails with a named error if either is
 missing. `organizationId` scopes the trail bucket policy so member accounts can deliver logs —
 CDK warns at synth if it is absent. `alertEmail` and `budgetAccountId` are optional.
 
-List the OU IDs with:
+`Security` is deliberately not a target: it is empty and reserved, and attaching an SCP to an
+empty OU does nothing. Add it when it holds an account.
+
+Re-read the OU IDs from AWS at any time with:
 
 ```powershell
 aws organizations list-roots --profile mgmt
-aws organizations list-organizational-units-for-parent --parent-id <root id> --profile mgmt
+aws organizations list-organizational-units-for-parent --parent-id $env:ROOT_OU_ID --profile mgmt
 ```
 
 ## Done manually, not here

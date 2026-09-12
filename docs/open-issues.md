@@ -224,3 +224,108 @@ The site repo also needs these cleanups before `git subtree` migration, all docu
 - A stray `add` dependency in `package.json` (an accidental `npm install add`).
 - ~35 lines of commented-out code in `pages/api/oandaReturn.ts`.
 - Both API routes get deleted once the OANDA Lambda is live.
+
+---
+
+## 9. The dev permissions boundary did not deny a live `env=prod` S3 call
+
+**Severity: high. The mechanism ADR-0001 relies on to share one account between dev and prod
+is unverified — the one probe designed to prove it works instead showed it does not, for at
+least one action.**
+
+### What happened
+
+Ran the manual probe in `infrastructure/bootstrap/README.md` ("Verify the boundary is
+load-bearing") for the first time against real infrastructure, immediately after bootstrapping
+both qualifiers. Steps taken, in order:
+
+1. Confirmed `cdk-hnbdev-cfn-exec-role-*` carries `PermissionsBoundaryArn` ending in
+   `policy/cdk-dev-permissions-boundary` (`aws iam get-role`).
+2. Confirmed the boundary's policy document, fetched live, matches what
+   `dev-permissions-boundary.test.ts` asserts: `DenyProdTaggedResources` is `Deny` / `*` / `*`
+   with `StringEquals: {"aws:ResourceTag/env": "prod"}`.
+3. Created an S3 bucket, tagged it `env=prod`.
+4. Assumed the dev CFN execution role (temporarily widening its trust policy, per the README).
+5. Control call: tagged a **different, untagged** bucket. Succeeded — proves the role holds
+   `AdministratorAccess` and isn't failing for unrelated reasons.
+6. Test call: called `s3:PutBucketTagging` again on the `env=prod` bucket. **Expected
+   `AccessDenied`. Got success (`204`).**
+7. Repeated the test call twice more, including after a 60-second wait for any tag-propagation
+   delay, and re-verified the `env=prod` tag was still present each time. Same result: success.
+8. Ran an unrelated, unconditional Deny in the *same* boundary policy
+   (`DenyBoundaryEscape` → `iam:CreateUser`) as a sanity check. **This one denied correctly**,
+   proving the boundary is attached and IAM is evaluating it for this role — the failure is
+   specific to the tag-conditional statement, not the boundary as a whole.
+9. Confirmed via CloudTrail (`lookup-events`) that all three `PutBucketTagging` calls by the
+   assumed dev role returned `204`, never `AccessDenied`.
+10. Confirmed against AWS's Service Authorization Reference that `s3:PutBucketTagging` does
+    list `aws:ResourceTag/${TagKey}` as a supported condition key — so this is not a case of
+    the action simply not supporting the key.
+11. `aws iam simulate-principal-policy` agreed the call *should* be denied when the `env=prod`
+    resource tag was supplied as explicit context (`--context-entries`) — but that tool does
+    not fetch live resource tags automatically, and simulating without manually supplied
+    context returned `allowed`, matched only by `AdministratorAccess`. The simulator was not
+    useful here as an independent confirmation.
+
+Cleaned up fully: probe and control buckets deleted, the widened trust policy restored to
+`{"Effect":"Allow","Principal":{"Service":"cloudformation.amazonaws.com"},"Action":"sts:AssumeRole"}`,
+temporary local credential files removed.
+
+### What is confirmed and what is not
+
+Confirmed:
+- The boundary is attached to the correct role.
+- The boundary policy document is syntactically exactly what the design calls for.
+- The boundary is being evaluated at all (the unconditional Deny fired).
+- `s3:PutBucketTagging` supports the condition key used.
+
+Not confirmed — this is the open question:
+- **Why the tag-conditional Deny did not fire against a live call.** No root cause was
+  identified. Candidates not yet ruled out: an S3-specific interaction between
+  `aws:ResourceTag` evaluation and permissions boundaries specifically (as opposed to
+  identity-based policies, where `aws:ResourceTag` is well-documented and commonly used); some
+  form of evaluation caching or eventual consistency on the bucket-level tag-set longer than
+  60 seconds; or a nuance of how S3 bucket (as opposed to object) tags are surfaced to the IAM
+  authorization request for `PutBucketTagging` specifically.
+- Whether this failure is S3-specific or would reproduce on other tag-taggable services
+  (untested — the probe only exercises S3, per the README).
+
+### Why this matters
+
+This is not a documentation or process gap — `dev-permissions-boundary.test.ts` already states
+plainly that it "cannot prove the denial happens" and that this probe is what "closes that
+loop." The probe ran, and it showed the loop does not close, at least for this action. ADR-0001
+and `infrastructure/bootstrap/README.md` both describe the boundary as the mechanism making it
+safe to share one AWS account between dev and prod. If the tag-conditional Deny does not
+actually deny, a dev deploy currently has an unbounded path to mutate a prod-tagged resource's
+tags via at least this one action, and possibly others sharing the same condition-key pattern.
+
+### What this does not affect
+
+- The other boundary statements (`DenyBoundaryEscape`, `DenyCreatingUnboundedPrincipals`,
+  `DenyBoundaryPolicyAlteration`) are all unconditional and were not tested here, but by the
+  same logic that proved `DenyBoundaryEscape` fires, they are not suspect — only the
+  tag-conditional statement is in question.
+- Prod's own posture is unaffected — prod was never intended to be constrained by this
+  boundary; its control is the GitHub Environment review gate (unchanged, unaffected by this).
+- Nothing has been deployed into either qualifier yet (`docs/open-issues.md` issue 2 — no
+  dev-scoped stacks exist), so no real dev workload has exercised this gap in practice.
+
+### Suggested next steps (not yet done)
+
+- Re-run the probe against a different action/resource type (e.g. an EC2 instance tag, a
+  Secrets Manager secret tag) to determine whether this is S3-specific or systemic.
+- Search AWS re:Post / known-issues for `aws:ResourceTag` + permissions boundary + S3 bucket
+  tagging specifically, since object-tag conditions (`s3:ExistingObjectTag`) have documented
+  quirks (see the "not supported for PUT/DELETE Object" note in
+  https://docs.aws.amazon.com/AmazonS3/latest/userguide/tagging-and-policies.html) that may
+  have a bucket-tag analogue undocumented in the generic condition-key list.
+- Consider whether resource-level ARN scoping (e.g. `Resource: "arn:aws:s3:::*"` instead of
+  `Resource: "*"`) changes evaluation — the current statement's `Resource: "*"` combined with a
+  tag condition is the exact pattern documented as fully supported, so this is a low-probability
+  lead but untested.
+- Until root-caused, treat the dev/prod account-sharing boundary as **advisory, not
+  load-bearing**, for any action pattern not yet individually verified. The Phase 0 exit
+  checklist item "the manual probe... shows the dev execution role denied" cannot be checked
+  off as currently worded; either the probe needs to pass, or the checklist and ADR-0001 need
+  to describe the residual risk explicitly.

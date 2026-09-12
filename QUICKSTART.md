@@ -42,6 +42,8 @@ Also have ready:
 
 Read `docs/open-issues.md` before you start. Issues 2 and 6 both appear as steps below.
 
+**Progress:** step 1 is complete — see the note at the end of it. Start at step 2.
+
 ---
 
 ## Decisions to make now
@@ -52,16 +54,21 @@ Write these down before step 1. They are all effectively permanent.
 | --- | --- | --- |
 | Primary region | `us-east-1` | Baked into every stack, every ARN, every SSM path. ACM certificates for CloudFront must live in `us-east-1` regardless, so any other primary region means a cross-region certificate stack and a second bootstrap. |
 | Identity Center region | `us-east-1` (must match) | Changing it requires deleting the entire Identity Center instance and every assignment. |
-| Management account email | `you+aws-mgmt@gmail.com` | Account emails must be globally unique across all of AWS, permanently. They cannot be reused even after the account is closed. |
-| Platform account email | `you+aws-platform@gmail.com` | Same. Use a mailbox you will hold forever. |
+| Management account email | `josephkan3+infra@gmail.com` (**settled**) | Account emails must be globally unique across all of AWS, permanently. They cannot be reused even after the account is closed. |
+| Platform account email | `josephkan3+platform@gmail.com` | Same. Use a mailbox you will hold forever. |
 | GitHub repo | `JosephKan3/home-platform` | Encoded in every OIDC trust policy `sub` claim. Moving to an org later rewrites all three trust policies. |
+
+Real account, organization and OU identifiers are **not committed** — they live in
+`.env.local`, which is gitignored. Copy `.env.example` to `.env.local` and fill it in as each
+step produces a value. Account IDs are not secret, but they are free reconnaissance
+(`docs/development.md` §6).
 
 `ca-central-1` becomes the right answer only if data residency becomes a stated requirement.
 PIPEDA does not mandate residency. That is a Phase 2+ question.
 
 ---
 
-## 1. AWS account, Organization, OUs
+## 1. AWS account, Organization, OUs — DONE
 
 **Goal:** a management account that runs nothing, with an Organization and three OUs.
 
@@ -86,23 +93,72 @@ Root
 └── Sandbox      (empty — reserved)
 ```
 
+### Why these OUs and not `dev` / `qa` / `prod`
+
+The obvious instinct is to make the OUs environments. Resist it. **An OU is a policy
+boundary, not a label** — the only thing an OU does is attach SCPs, and accounts inherit
+them. So group accounts by *which guardrails they need*, not by lifecycle stage:
+
+| OU | Guardrails it will carry |
+| --- | --- |
+| `Security` | Audit/log-archive accounts. Deny deleting trails, deny everything but security tooling. Reserved until CloudTrail and GuardDuty graduate out of the management account (ADR-0001 records that as a known deviation). |
+| `Workloads` | Region lock, no NAT/TGW, no IAM users, instance-family denies. Step 9 attaches all three SCPs here. |
+| `Sandbox` | Deliberately *looser* than Workloads, with a tighter budget. Somewhere to break things without the workload SCPs in the way. |
+
+`dev`, `qa` and `prod` would all need the *same* SCPs, so splitting them into OUs buys
+nothing — you would attach identical policies three times and gain no isolation.
+
+The real reason people reach for dev/qa/prod is **account** isolation, and the way to get
+that is accounts *inside* `Workloads`:
+
+```
+Workloads
+├── Platform-Dev
+└── Platform-Prod
+```
+
+ADR-0001 deliberately declines that for now: dev and prod share the single Platform account,
+separated by CDK stages, the `env` tag plus a permissions boundary, and security groups.
+That is a documented compromise, not an oversight. When prod graduates to its own account it
+drops into `Workloads` and inherits every guardrail on day one with no policy rewrite —
+which is the entire payoff of grouping by policy instead of by environment.
+
 > **SCPs do not apply to the management account.** No guardrail written in step 9 will
 > constrain it. That is precisely why nothing ever runs there.
 
 **Success looks like:** Organizations console shows "All features enabled" and three OUs
 under Root.
 
+**Completed 2026-09-11.** Organization created with all features and the SCP policy type
+enabled. Management account `joseph_kan_infra` (alias `josephkan-infra`), root MFA on, one
+IAM admin user. The three OUs exist and are empty. Real IDs are in `.env.local`; re-read
+them at any time with:
+
+```powershell
+aws organizations describe-organization --profile mgmt
+aws organizations list-organizational-units-for-parent --parent-id $env:ROOT_OU_ID --profile mgmt
+```
+
 ---
 
-## 2. Create the Platform account
+## 2. Create the Platform account — DONE except root lockdown
 
 **Goal:** one workload account, inside `Workloads`, with its root user locked down.
 
 1. Organizations → Add account → Create account.
    - Name: `Platform`
-   - Email: the plus-addressed platform address from the decisions table
-2. Move it into the `Workloads` OU immediately.
-3. Take control of its root user: sign out, "Forgot password" against the Platform account
+   - Email: `josephkan3+platform@gmail.com`
+2. Move it into the `Workloads` OU immediately:
+
+   ```powershell
+   aws organizations move-account --profile mgmt `
+     --account-id <new platform account id> `
+     --source-parent-id $env:ROOT_OU_ID `
+     --destination-parent-id $env:WORKLOADS_OU_ID
+   ```
+
+3. Record the new account ID as `PLATFORM_ACCOUNT_ID` in `.env.local`.
+4. Take control of its root user: sign out, "Forgot password" against the Platform account
    email, set a password, enable MFA, and never use it again.
 
 > **Do not create accounts casually.** AWS limits account closure to ~10% of your accounts
@@ -110,30 +166,55 @@ under Root.
 > Create exactly these two.
 
 **Record now, you will need all of it:** management account ID, platform account ID, both
-root emails.
+root emails. The first goes in `.env.local` as `MGMT_ACCOUNT_ID` (already there), the second
+as `PLATFORM_ACCOUNT_ID`.
+
+**Completed 2026-09-11**, except step 4. Account `Platform`
+(`josephkan3+platform@gmail.com`) created and moved into `Workloads`;
+`PLATFORM_ACCOUNT_ID` is recorded in `.env.local`. Verify the placement with:
+
+```powershell
+aws organizations list-accounts-for-parent --parent-id $env:WORKLOADS_OU_ID --profile mgmt
+```
+
+> **Step 4 is still outstanding.** The Platform root user has whatever password AWS
+> generated and **no MFA**. It is the most privileged identity in the account and no SCP
+> constrains a root user. Do the password reset and MFA enrolment before deploying anything
+> into this account.
 
 ---
 
-## 3. Identity Center, permission sets, SSO profiles
+## 3. Identity Center, permission sets, SSO profiles — done
 
 **Goal:** two named CLI profiles, `mgmt` and `platform`, that assume admin without root.
 
-1. Enable IAM Identity Center in **`us-east-1`**. This region choice is effectively permanent.
-2. Create a user for yourself. Enable MFA.
-3. Create permission sets:
-   - `AdministratorAccess` — session duration **4h** (not the default 1h, not 12h)
-   - `ReadOnlyAccess` — session duration 8h
-   - `Billing` — for cost work without admin rights
-4. Assign yourself `AdministratorAccess` on **both** accounts.
-5. Note the start URL: `https://d-xxxxxxxxxx.awsapps.com/start`
+**IAM Identity Center** is the replacement for IAM users. Rather than a permanent
+username, password and access key, you sign in once (`aws sso login`) and receive
+credentials that expire, which the CLI refreshes on demand. It is free. The point is
+blast radius: a leaked access key is permanent access, a leaked SSO token expires. This
+is why "no IAM users and no access keys" is an exit criterion.
 
-Then configure the CLI:
+What exists:
+
+- Identity Center enabled in `us-east-1`.
+- One permission set, `AdministratorAccess`, session duration **12h** (the AWS maximum).
+  `ReadOnlyAccess` and `Billing` permission sets were deliberately **not** created — this
+  is a single-operator home lab, not a multi-person org, and the extra profiles buy
+  least-privilege separation this threat model doesn't need. Revisit if that changes.
+- Assigned to **both** accounts (management and Platform — see `.env.local`).
+- Start URL: recorded in `.env.local` as `SSO_START_URL`, not here (gitignored; see below).
+
+`~/.aws/config` has an `[sso-session homelab]` block plus `mgmt` and `platform` profiles
+pointing at it (`sso_account_id` + `sso_role_name = AdministratorAccess`), written directly
+rather than through `aws configure sso`. It also holds a `legacy` profile pointing at an
+unrelated older personal account — leave it alone and never deploy through it. The
+`default` profile is deliberately left with no credentials so that a forgotten `--profile`
+fails loudly instead of hitting the wrong organization.
+
+Log in once (covers both profiles, since they share the sso-session):
 
 ```powershell
-aws configure sso
-# Start URL: the one from step 5 above
-# Region: us-east-1
-# Profile names: mgmt and platform
+aws sso login --profile mgmt
 ```
 
 Verify both:
@@ -144,7 +225,16 @@ aws sts get-caller-identity --profile platform
 ```
 
 **Success looks like:** both return an ARN containing
-`assumed-role/AWSReservedSSO_AdministratorAccess/`.
+`assumed-role/AWSReservedSSO_AdministratorAccess_.../`.
+
+The interim static access key and IAM user `joseph-kan-infra-admin` (bridge for steps 1–2,
+before Identity Center existed) have been **deleted** — key, MFA device, login profile,
+attached policy, and the user itself. Verified `aws iam list-users --profile mgmt` returns
+empty.
+
+> **12h session note:** since sessions last 12h, `aws sso login --profile mgmt` is a
+> rare, not hourly, chore. When a command fails with an expired-token error, that's the
+> only fix needed — not a broken setup.
 
 > **From this point, root is never used again** for either account. That is a Phase 0 exit
 > criterion.
@@ -158,12 +248,17 @@ Sessions expire. An expired session surfaces as a credentials error *partway thr
 
 **Goal:** a green local test run before you touch AWS with CDK.
 
+Load everything recorded so far from `.env.local`:
+
 ```powershell
-$env:MGMT_ACCOUNT_ID     = "<MGMT_ACCOUNT_ID>"
-$env:PLATFORM_ACCOUNT_ID = "<PLATFORM_ACCOUNT_ID>"
+Get-Content .env.local | Where-Object { $_ -match '^\s*[^#\s]' } | ForEach-Object {
+  $k, $v = $_ -split '=', 2
+  Set-Item -Path "env:$($k.Trim())" -Value $v.Trim()
+}
 ```
 
-Put both in your PowerShell profile. Every synth, diff and deploy needs them.
+Every synth, diff and deploy needs `MGMT_ACCOUNT_ID` and `PLATFORM_ACCOUNT_ID`. Put the
+loader in your PowerShell profile, or set the two by hand each session.
 
 ```powershell
 pnpm install
@@ -219,10 +314,17 @@ account would give dev and prod a single shared execution role.
 Run these from `infrastructure/bootstrap`. Confirm your SSO sessions are live first
 (`aws sso login --profile platform`, and the same for `mgmt`).
 
-```powershell
-$env:PLATFORM_ACCOUNT_ID = "<platform account id>"
-$env:MGMT_ACCOUNT_ID     = "<management account id>"
-```
+Both account IDs must be in the session; load `.env.local` as in step 4.
+
+> **`--qualifier` does not rename the CloudFormation stack.** `cdk bootstrap` always creates
+> a stack named `CDKToolkit` unless `--toolkit-stack-name` is also passed — the qualifier only
+> changes the *role and bucket names inside it*. Two qualifiers bootstrapped into the same
+> account and region without distinct `--toolkit-stack-name` values collide on one stack, and
+> the second bootstrap **deletes and replaces** the first one's roles. This happened once
+> during initial setup: `hnbprod` was silently destroyed when `hnbdev` was bootstrapped
+> straight after it, both defaulting to `CDKToolkit`. Every command below passes an explicit,
+> distinct `--toolkit-stack-name` for this reason. Management gets no suffix because it is the
+> only qualifier ever bootstrapped into that account and region — nothing to collide with.
 
 ### 5a. Bootstrap the management account
 
@@ -237,7 +339,7 @@ npx cdk bootstrap aws://$env:MGMT_ACCOUNT_ID/us-east-1 --profile mgmt --qualifie
 No boundary, so nothing has to exist first.
 
 ```powershell
-npx cdk bootstrap aws://$env:PLATFORM_ACCOUNT_ID/us-east-1 --profile platform --qualifier hnbprod
+npx cdk bootstrap aws://$env:PLATFORM_ACCOUNT_ID/us-east-1 --profile platform --qualifier hnbprod --toolkit-stack-name CDKToolkit-hnbprod
 ```
 
 ### 5c. Now go do step 6, then come back
@@ -257,7 +359,8 @@ aws iam get-policy --profile platform `
 ```powershell
 npx cdk bootstrap aws://$env:PLATFORM_ACCOUNT_ID/us-east-1 --profile platform `
   --qualifier hnbdev `
-  --custom-permissions-boundary cdk-dev-permissions-boundary
+  --custom-permissions-boundary cdk-dev-permissions-boundary `
+  --toolkit-stack-name CDKToolkit-hnbdev
 ```
 
 The CLI prints `Adding new permissions boundary cdk-dev-permissions-boundary`. That message
@@ -396,7 +499,6 @@ a change.
 Default `origin` is `vercel`. Run from `infrastructure/dns`.
 
 ```powershell
-$env:PLATFORM_ACCOUNT_ID = "<platform account id>"
 npx cdk deploy DnsStack --profile platform
 ```
 
@@ -506,24 +608,26 @@ aws organizations enable-aws-service-access `
   --service-principal cloudtrail.amazonaws.com --profile mgmt
 ```
 
-Get the OU IDs:
+The OU IDs were recorded in `.env.local` at step 1. Re-read them from AWS at any time:
 
 ```powershell
 aws organizations list-roots --profile mgmt
-aws organizations list-organizational-units-for-parent --parent-id <root id> --profile mgmt
+aws organizations list-organizational-units-for-parent --parent-id $env:ROOT_OU_ID --profile mgmt
 ```
 
-Deploy from `infrastructure/org`:
+Deploy from `infrastructure/org`, with `.env.local` loaded into the session (step 4):
 
 ```powershell
-$env:MGMT_ACCOUNT_ID = "<management account id>"
 npx cdk deploy GovernanceStack --profile mgmt `
-  -c workloadsOuId=ou-xxxx-xxxxxxxx `
-  -c sandboxOuId=ou-xxxx-xxxxxxxx `
-  -c organizationId=o-xxxxxxxxxx `
-  -c alertEmail=you@example.com `
-  -c budgetAccountId=<platform account id>
+  -c workloadsOuId=$env:WORKLOADS_OU_ID `
+  -c sandboxOuId=$env:SANDBOX_OU_ID `
+  -c organizationId=$env:ORGANIZATION_ID `
+  -c alertEmail=josephkan3+aws-alerts@gmail.com `
+  -c budgetAccountId=$env:PLATFORM_ACCOUNT_ID
 ```
+
+Note that `Security` is **not** a target. It is empty and reserved; attaching SCPs to an
+empty OU does nothing. Add it when it holds an account.
 
 `workloadsOuId` and `sandboxOuId` are required; synth fails with a named error if either is
 missing. `alertEmail` and `budgetAccountId` are optional, but the cost anomaly subscription
@@ -641,7 +745,6 @@ npx next export    # writes ./out
 Run from `applications/personal-site`:
 
 ```powershell
-$env:PLATFORM_ACCOUNT_ID = "<platform account id>"
 npx cdk deploy PersonalSiteStack --profile platform
 ```
 
@@ -757,16 +860,21 @@ Phase 0 is done when **all** of these are true.
 - [ ] `https://josephkan.ca` serves from CloudFront with a valid ACM cert and charts render
 - [ ] Vercel is off for the personal site
 - [ ] Root credentials have not been used since step 3
-- [ ] No IAM users and no access keys exist in either account
+- [ ] No IAM users and no access keys exist in either account — in particular the interim
+      `joseph-kan-infra-admin` user and its access key, created to bridge steps 1–2 before
+      Identity Center existed, are **deleted** (step 3)
 - [ ] `Resolve-DnsName josephkan.ca -Type NS` returns AWS nameservers
 - [ ] `cdk-hnbdev-cfn-exec-role-*` carries `cdk-dev-permissions-boundary` and
       `cdk-hnbprod-cfn-exec-role-*` carries none (step 5d)
-- [ ] The manual probe in `infrastructure/bootstrap/README.md` shows the dev execution role
-      **denied** tagging an `env=prod` resource **while succeeding** on an untagged one. The
-      control call is the point: without it the denial proves only the absence of an Allow.
-      CI asserts the offline preconditions
-      (`infrastructure/bootstrap/test/dev-permissions-boundary.test.ts`) but cannot execute an
-      IAM evaluation, so this one is signed off by hand
+- [ ] **FAILING as of this run — do not sign off.** The manual probe in
+      `infrastructure/bootstrap/README.md` is supposed to show the dev execution role
+      **denied** tagging an `env=prod` resource while succeeding on an untagged one. Run once
+      after both qualifiers were bootstrapped: the control call succeeded (proves the role has
+      `AdministratorAccess`) but the `env=prod` tagging call also succeeded — no `AccessDenied`,
+      confirmed via CloudTrail across three attempts. An unrelated, unconditional Deny in the
+      same boundary fired correctly, so the boundary is attached and evaluated; only the
+      tag-conditional statement failed to deny. Root cause not identified. See
+      `docs/open-issues.md` issue 9 before re-attempting or treating dev/prod isolation as real.
 - [ ] All three Aspects fail synth in their unit tests
 - [ ] A deliberate `SubnetType.PRIVATE_WITH_EGRESS` in a scratch branch **fails CI**
 - [ ] A budget alert has fired at least once (set the threshold to $0.01 temporarily to

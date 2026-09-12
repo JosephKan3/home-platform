@@ -34,10 +34,10 @@ The cutover is one context value. So is the rollback.
 
 ```powershell
 cd infrastructure/dns
-$env:PLATFORM_ACCOUNT_ID = "<platform account id>"
-
 npx cdk deploy DnsStack --profile platform -c origin=vercel
 ```
+
+`PLATFORM_ACCOUNT_ID` must be in the session — it lives in `.env.local` (gitignored).
 
 If `cdk.json` was edited to make the cutover permanent (`"origin": "cloudfront"`), the `-c`
 flag above still overrides it for this deploy. Revert the `cdk.json` change and land it

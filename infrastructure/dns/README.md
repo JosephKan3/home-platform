@@ -106,8 +106,9 @@ Without step 2 the zone looks broken from a laptop and the AWS configuration is 
 Deploy with the default `origin=vercel`. The zone is created holding records identical to
 GoDaddy's.
 
+`PLATFORM_ACCOUNT_ID` must be in the session; it lives in `.env.local` (gitignored).
+
 ```powershell
-$env:PLATFORM_ACCOUNT_ID = "<platform account id>"
 npx cdk deploy DnsStack --profile platform
 ```
 

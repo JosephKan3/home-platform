@@ -58,9 +58,16 @@ Only when CI genuinely cannot do it. **Announce it** — in the PR, in a commit 
 whatever channel exists. An undocumented manual deploy means the next person reads the repo
 and believes something that is not true about the running account.
 
-```powershell
-$env:PLATFORM_ACCOUNT_ID = "<platform account id>"
+Load the account and OU identifiers first — they live in `.env.local` (gitignored):
 
+```powershell
+Get-Content .env.local | Where-Object { $_ -match '^\s*[^#\s]' } | ForEach-Object {
+  $k, $v = $_ -split '=', 2
+  Set-Item -Path "env:$($k.Trim())" -Value $v.Trim()
+}
+```
+
+```powershell
 # Always diff first. A manual deploy skips the PR diff, which is the only review
 # the change would otherwise get.
 pnpm --filter @platform/infra-dns exec cdk diff DnsStack --profile platform
@@ -73,9 +80,8 @@ The other stacks:
 pnpm --filter @platform/infra-bootstrap exec cdk deploy BootstrapStack --profile platform
 pnpm --filter @platform/personal-site   exec cdk deploy PersonalSiteStack --profile platform
 
-$env:MGMT_ACCOUNT_ID = "<management account id>"
 pnpm --filter @platform/infra-org exec cdk deploy GovernanceStack --profile mgmt `
-  -c workloadsOuId=ou-xxxx-xxxxxxxx -c sandboxOuId=ou-xxxx-xxxxxxxx
+  -c workloadsOuId=$env:WORKLOADS_OU_ID -c sandboxOuId=$env:SANDBOX_OU_ID
 ```
 
 `PersonalSiteStack` needs the real Next.js static export on disk. Do **not** pass
@@ -227,7 +233,6 @@ Trust policies are code. Correct
 CI cannot fix the identity it needs in order to run:
 
 ```powershell
-$env:PLATFORM_ACCOUNT_ID = "<platform account id>"
 pnpm --filter @platform/infra-bootstrap exec cdk diff BootstrapStack --profile platform
 pnpm --filter @platform/infra-bootstrap exec cdk deploy BootstrapStack --profile platform
 ```

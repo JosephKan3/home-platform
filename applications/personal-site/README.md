@@ -130,8 +130,9 @@ Next 13+: set `output: "export"` in `next.config.js`; `next build` writes `out/`
 
 ### Deploy
 
+`PLATFORM_ACCOUNT_ID` must be in the session; it lives in `.env.local` (gitignored).
+
 ```powershell
-$env:PLATFORM_ACCOUNT_ID = "<platform account id>"
 npx cdk deploy PersonalSiteStack --profile platform
 ```
 

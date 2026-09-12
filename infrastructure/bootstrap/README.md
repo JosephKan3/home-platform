@@ -74,12 +74,19 @@ and the policy lives in this stack.
 That is broken by bootstrapping **prod first**, deploying this stack through prod, then
 bootstrapping dev.
 
-Requires an SSO session (`aws sso login --profile platform`) and `PLATFORM_ACCOUNT_ID` set.
+Requires an SSO session (`aws sso login --profile platform`) and both account IDs in the
+session. They live in `.env.local` at the repo root, which is gitignored — see
+`docs/development.md` §6 for the loader.
 
-```powershell
-$env:PLATFORM_ACCOUNT_ID = "<platform account id>"
-$env:MGMT_ACCOUNT_ID     = "<management account id>"
-```
+> **Always pass `--toolkit-stack-name`, distinct per qualifier, when a second qualifier will
+> ever share the account and region.** `cdk bootstrap` names its CloudFormation stack
+> `CDKToolkit` regardless of `--qualifier` — the qualifier only renames the roles, bucket and
+> ECR repo *inside* that stack. Bootstrapping `hnbprod` then `hnbdev` into the Platform account
+> without this flag reuses the same `CDKToolkit` stack for both: the second bootstrap deletes
+> the first qualifier's roles as part of updating "its" stack. This is not hypothetical — it
+> happened during initial setup and required deleting the ambiguous stack and re-bootstrapping
+> both qualifiers under `CDKToolkit-hnbprod` / `CDKToolkit-hnbdev` to recover. Management does
+> not need a suffix; it is the only qualifier ever bootstrapped into that account and region.
 
 ### 1. Bootstrap the management account
 
@@ -94,7 +101,7 @@ npx cdk bootstrap aws://$env:MGMT_ACCOUNT_ID/us-east-1 --profile mgmt --qualifie
 No boundary, so nothing has to exist first.
 
 ```powershell
-npx cdk bootstrap aws://$env:PLATFORM_ACCOUNT_ID/us-east-1 --profile platform --qualifier hnbprod
+npx cdk bootstrap aws://$env:PLATFORM_ACCOUNT_ID/us-east-1 --profile platform --qualifier hnbprod --toolkit-stack-name CDKToolkit-hnbprod
 ```
 
 ### 3. Deploy this stack
@@ -126,7 +133,8 @@ aws iam get-policy --profile platform `
 ```powershell
 npx cdk bootstrap aws://$env:PLATFORM_ACCOUNT_ID/us-east-1 --profile platform `
   --qualifier hnbdev `
-  --custom-permissions-boundary cdk-dev-permissions-boundary
+  --custom-permissions-boundary cdk-dev-permissions-boundary `
+  --toolkit-stack-name CDKToolkit-hnbdev
 ```
 
 The CLI prints `Adding new permissions boundary cdk-dev-permissions-boundary`. Confirm it is
