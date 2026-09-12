@@ -174,7 +174,7 @@ jobs:
       # the PR rather than only in the job log.
       - name: Post the diff as a PR comment
         if: always() && hashFiles('diff.md') != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
