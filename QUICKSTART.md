@@ -707,20 +707,24 @@ named `platform-org-trail`, not literally `OrgTrail` — that's the CDK logical 
 
 ---
 
-## 10. Manual console steps
+## 10. Manual console steps — GuardDuty and the probe budget done; tags pending 24h
 
 **Goal:** the two things with no clean CloudFormation path.
 
-Both are account-level toggles. Do them now — the second one has a ~24h lead time and is not
-retroactive.
+Both are account-level toggles. The second has a ~24h lead time and is not retroactive.
 
-| Task | Where | Note |
+| Task | Status | Note |
 | --- | --- | --- |
-| **Enable GuardDuty** on the Platform account | GuardDuty console, Platform account, `us-east-1` | 30-day free trial, then ~$3–10/mo. Keep it. The `protectAuditPolicy` SCP then prevents anyone turning it back off. |
-| **Activate cost allocation tags** `app`, `env`, `owner` | Billing → Cost allocation tags, management account | Takes ~24h to appear and applies **only going forward**. With one workload account these tags are the only billing breakdown you get. |
+| **Enable GuardDuty** on the Platform account | **Done**, via CLI (`aws guardduty create-detector --enable --region us-east-1 --profile platform`), no console needed | 30-day free trial, then ~$3–10/mo. `Status: ENABLED`, detector `5ad049a2e7f1ec4d253f39bc27503297`. The `protectAuditPolicy` SCP (already attached, step 9) now prevents anyone turning it back off. |
+| **Activate cost allocation tags** `app`, `env`, `owner` | **Pending** — cannot activate yet | `aws ce update-cost-allocation-tags-status` fails with `Tag keys not found` until AWS has ingested billing data carrying those tag keys, which itself takes up to 24h after the tagged resources (Platform account, DNS stack, etc.) start incurring cost. Re-check with `aws ce list-cost-allocation-tags --profile mgmt`; once the three keys appear (`Status: Inactive`), activate with `aws ce update-cost-allocation-tags-status --cost-allocation-tags-status TagKey=app,Status=Active TagKey=env,Status=Active TagKey=owner,Status=Active --profile mgmt`. No console needed. |
 
-Also create a **temporary $0.01 budget threshold** so you can prove a budget alert actually
-fires — that is a Phase 0 exit criterion. Budgets take ~24h before their first evaluation.
+**Temporary $0.01 budget threshold — done, via CLI**, to prove a budget alert actually fires
+(Phase 0 exit criterion). Created `phase0-alert-probe`, `$0.01` MONTHLY, `ACTUAL > $0`,
+notifying `+aws-alerts@`. Budgets take ~24h before their first evaluation; check back with
+`aws budgets describe-budget --account-id $env:MGMT_ACCOUNT_ID --budget-name phase0-alert-probe
+--profile mgmt` and watch for the alert email. **Delete this budget once it has fired once** —
+it is a one-time probe, not a permanent guardrail (`platform-monthly-cost` from step 9 is the
+real one).
 
 AWS Config is deliberately skipped. Its per-item recording charges creep and nothing needs it.
 
