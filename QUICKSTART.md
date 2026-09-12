@@ -878,11 +878,39 @@ Do not go to step 13 until this passes fully. It has.
 
 ---
 
-## 13. The apex cutover
+## 13. The apex cutover — done, hit one real deploy failure
 
 **Goal:** `josephkan.ca` serves from CloudFront.
 
 This is the single highest-risk moment in Phase 0, deliberately isolated to two records.
+
+> **The first two deploy attempts failed on `www` with `RRSet of type A ... is not permitted
+> because a conflicting RRSet of type CNAME with the same DNS name already exists`.**
+> Route53 forbids a CNAME and an A/ALIAS record coexisting at the same name, even
+> momentarily — but CloudFormation's default record replacement is create-then-delete, so it
+> tried to create the new `WwwCloudFrontRecord` (type A/ALIAS) while the old
+> `WwwVercelRecord` (type CNAME) still existed. The `www` create failed both times; the
+> **apex create succeeded both times** (A→A/ALIAS has no such conflict), so the first
+> attempt's automatic rollback left a real split-brain: apex live on CloudFront,
+> `www` rolled back to Vercel, and — worse — **CloudFormation's own tracked state diverged
+> from the live Route53 record** (it believed the apex rollback to Vercel succeeded; it
+> hadn't, confirmed by `aws route53 list-resource-record-sets` showing the CloudFront ALIAS
+> still live while `cdk diff -c origin=vercel` reported no differences). The site was never
+> down at any point — this was a deploy/state problem, not an availability one.
+>
+> **Fix:** manually delete the conflicting `www` CNAME via `aws route53
+> change-resource-record-sets` (a plain `DELETE` change batch) *before* redeploying, so
+> CloudFormation's create has nothing to conflict with. Redeployed immediately after —
+> `www` was only unresolvable for the few seconds between the manual delete and the
+> following deploy's `CREATE_COMPLETE`. Confirmed against the authoritative nameservers
+> directly (`Resolve-DnsName ... -Server ns-536.awsdns-03.net`) since local DNS caching from
+> the earlier attempts otherwise shows a stale answer for a few minutes.
+>
+> **If this happens to you:** check `aws route53 list-resource-record-sets` against reality
+> before trusting `cdk diff`'s "no differences" — CloudFormation's belief about a
+> partially-failed Route53 RecordSet change is not reliable, since Route53 RecordSets are not
+> covered by `aws cloudformation detect-stack-drift` (confirmed: it reports `IN_SYNC` while
+> the live apex disagreed). Delete the conflicting old record by hand, then redeploy.
 
 > **It is reversible in about five minutes and does not touch nameservers.** Every record
 > `infrastructure/dns` creates carries a 300s TTL, so redeploying with `origin=vercel` puts

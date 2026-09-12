@@ -203,6 +203,37 @@ and the `www` `CNAME` replaced by an ALIAS. Nothing else should move.
 For a permanent flip, change `"origin": "vercel"` to `"origin": "cloudfront"` in `cdk.json`
 and add `"cloudFrontDomainName"` next to it, so CI deploys the cut-over state by default.
 
+> **Known failure mode: `www` fails with `RRSet of type A ... is not permitted because a
+> conflicting RRSet of type CNAME with the same DNS name already exists`.** Route53 forbids a
+> CNAME and an A/ALIAS coexisting at the same name even momentarily, but CloudFormation's
+> default replacement is create-before-delete — it tries to create `WwwCloudFrontRecord`
+> while `WwwVercelRecord` (the old CNAME) still exists. This bit the very first live cutover
+> run. The apex has no such conflict (A replaced by A/ALIAS) and creates fine; only `www`
+> (CNAME replaced by ALIAS) hits it. A failed `www` creation triggers an automatic rollback
+> of the whole changeset — including the apex, which had already succeeded — but the
+> rollback's own attempt to recreate the Vercel apex record can itself fail silently, leaving
+> **CloudFormation's tracked state permanently wrong about what the apex record actually is**.
+> `aws cloudformation detect-stack-drift` will not catch this: Route53 RecordSets are not a
+> drift-detectable resource type, so it reports `IN_SYNC` regardless. `cdk diff -c
+> origin=vercel` will also lie, reporting no differences against a live record that is
+> actually still on CloudFront. The only reliable check is
+> `aws route53 list-resource-record-sets --hosted-zone-id <id>` against the real zone.
+>
+> **Fix, if this happens:** delete the conflicting `www` CNAME by hand first, then redeploy
+> immediately:
+> ```powershell
+> @'
+> {"Changes":[{"Action":"DELETE","ResourceRecordSet":{"Name":"www.<domain>.","Type":"CNAME","TTL":300,"ResourceRecords":[{"Value":"cname.vercel-dns.com"}]}}]}
+> '@ | Out-File delete-www-cname.json -Encoding ascii -NoNewline
+> aws route53 change-resource-record-sets --hosted-zone-id <id> --change-batch file://delete-www-cname.json --profile platform
+> npx cdk deploy DnsStack --profile platform -c origin=cloudfront -c cloudFrontDomainName=<domain>
+> ```
+> `www` is unresolvable for the few seconds between the manual delete and the following
+> deploy's `CREATE_COMPLETE` — not the multi-minute TTL-driven outage a naive DNS change
+> would cause. Confirm the fix against the authoritative nameservers directly
+> (`Resolve-DnsName www.<domain> -Server <one of the zone's own NS>`), since local DNS caching
+> from the failed attempts can show a stale answer for a few minutes otherwise.
+
 ### G2 — Verify
 
 ```powershell
