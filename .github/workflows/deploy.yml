@@ -157,8 +157,10 @@ jobs:
       # after an approval.
       #
       # Add dev-scoped stacks to this step when they exist.
+      # No `--` before `--filter` (see .github/workflows/ci.yml's Lint step
+      # comment for why the extra `--` breaks turbo's filter forwarding).
       - name: Synth
-        run: pnpm run synth -- --filter='!@platform/infra-org'
+        run: pnpm run synth --filter='!@platform/infra-org'
 
       # STILL NOT IMPLEMENTED AS A LIVE PROBE, deliberately, rather than faked.
       #

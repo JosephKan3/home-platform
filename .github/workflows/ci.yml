@@ -129,8 +129,9 @@ jobs:
       # GovernanceStack is excluded from the first step and synthesized
       # separately: it requires the OU IDs created by hand in Stage A, which
       # arrive as CDK context, not as environment variables.
+      # No `--` before `--filter` — see the Lint step above for why.
       - name: Synth + cdk-nag (all stacks except GovernanceStack)
-        run: pnpm run synth -- --filter='!@platform/infra-org'
+        run: pnpm run synth --filter='!@platform/infra-org'
 
       - name: Synth + cdk-nag GovernanceStack
         if: vars.WORKLOADS_OU_ID != '' && vars.SANDBOX_OU_ID != ''
