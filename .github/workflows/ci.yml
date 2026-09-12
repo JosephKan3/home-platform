@@ -99,7 +99,7 @@ jobs:
       # sub claim: repo:JosephKan3/home-platform:pull_request
       # StringEquals on the full sub, never StringLike on repo:JosephKan3/*.
       - name: Assume gha-plan
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}

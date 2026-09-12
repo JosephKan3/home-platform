@@ -110,7 +110,7 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_PROD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -139,7 +139,7 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_DEV_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -208,7 +208,7 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_PROD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -288,7 +288,7 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_PROD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
