@@ -264,10 +264,34 @@ jobs:
       # Step 4. Needs the real Next.js static export. `-c sitePlaceholder=true`
       # is a synth-only flag: deploying with it would publish a placeholder page
       # to a live domain.
+      #
+      # The site lives in a SEPARATE repo (JosephKan3/personal-website), not
+      # this monorepo -- StaticSite's default siteSourcePath
+      # (../../../personal-page/out, applications/personal-site/README.md) is a
+      # LOCAL sibling-checkout convention for manual deploys, which does not
+      # exist on a CI runner. Check that repo out into its own directory here,
+      # build its static export the same way a manual deploy does
+      # (infrastructure/dns and personal-site READMEs), and point
+      # siteSourcePath at the result instead of relying on the default. No
+      # token needed: personal-website is public.
+      - name: Checkout personal-website
+        uses: actions/checkout@v4
+        with:
+          repository: JosephKan3/personal-website
+          path: personal-website
+
+      - name: Build and export the site
+        working-directory: personal-website
+        run: |
+          npm install
+          npm run build
+          npx next export
+
       - name: Deploy PersonalSiteStack
         run: >-
           pnpm --filter @platform/personal-site exec cdk deploy PersonalSiteStack
           --require-approval never
+          -c siteSourcePath=${{ github.workspace }}/personal-website/out
 
       - name: Report the distribution domain
         run: |
