@@ -983,9 +983,27 @@ Not before. Until then it is the rollback target. Cutover completed
 
 Phase 0 is done when **all** of these are true.
 
-- [ ] A merge to `main` deploys `josephkan.ca` with **nobody touching the console** — not yet
-      exercised; every deploy so far in this runbook was manual (`cdk deploy` by hand). A
-      real merge-triggered `deploy-dev`/`deploy-prod` run through CI has not happened yet.
+- [x] A merge to `main` deploys `josephkan.ca` with **nobody touching the console** — done,
+      run `37242675761`. Took four attempts to get a genuinely clean run, each exposing a
+      real, previously-unexercised gap now fixed (the only "console touch" in all four was
+      clicking **Approve** on the `prod` Environment review gate, which is the intended
+      manual step, not a workaround):
+      1. Jest OOM: turbo ran all 5 packages' `test` tasks in parallel, each spawning its own
+         full worker pool, and exhausted the GitHub-hosted runner's memory —
+         `jest.preset.js` now caps `maxWorkers: 2`.
+      2. `deploy-prod`/`deploy-bootstrap`/`apex-cutover` called `cdk deploy` directly via
+         `pnpm --filter ... exec`, bypassing turbo's task graph and therefore never building
+         `@platform/config`/`@platform/constructs` — added an explicit `pnpm run build` step
+         to each.
+      3. `PersonalSiteStack`'s default `siteSourcePath` is a local sibling-checkout
+         convention (`../../../personal-page/out`) that does not exist on a CI runner —
+         added a cross-repo checkout of `JosephKan3/personal-website` (public, no token),
+         built its static export the same way a manual deploy does, and pointed
+         `siteSourcePath` at the result.
+      4. The distribution-domain reporting step ran a bare `aws cloudformation
+         describe-stacks`, which `gha-deploy-prod`'s intentionally minimal policy (only
+         `sts:AssumeRole` on the CDK bootstrap roles) does not permit outside a `cdk`
+         process — switched to `cdk deploy --outputs-file` plus `jq`, no new permissions.
 - [x] `https://josephkan.ca` serves from CloudFront with a valid ACM cert and charts render —
       verified: `curl` against authoritative nameservers returns `200` with full security
       headers and a valid TLS handshake on both apex and `www`; charts confirmed rendering in
