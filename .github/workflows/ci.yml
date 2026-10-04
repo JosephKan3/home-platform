@@ -76,6 +76,21 @@ jobs:
       # (no `--`) lets turbo consume the flag itself. Confirmed against
       # aws-cdk@2.1135.0-era turbo 2.10.8; this was live-broken in CI before
       # being caught by PR #9.
+      #
+      # `--concurrency=2` on Test specifically: turbo's default concurrency (10,
+      # or unlimited across however many packages match the filter) runs every
+      # matched package's `jest` invocation at once. jest.preset.js already caps
+      # each invocation to `maxWorkers: 2`, but that only bounds workers *within*
+      # one package — with 5 packages in scope that is still up to 10 jest worker
+      # processes simultaneously on a 4-core GitHub-hosted runner, each loading
+      # aws-cdk-lib and ts-jest. That combination silently exhausted the
+      # runner's memory and got it killed by GitHub's infrastructure with "the
+      # runner has received a shutdown signal" -- no test or compile error, the
+      # runner process itself died -- on two separate Dependabot PRs
+      # (2026-09-14, 2026-09-28) before being understood. `--concurrency=2`
+      # bounds the OTHER axis: how many packages' test tasks run at once, so the
+      # product of (packages run concurrently) x (workers per package) stays
+      # small regardless of how many packages a future PR's change-set touches.
       - name: Lint
         run: pnpm run lint --filter=...[origin/${{ github.base_ref }}]
 
@@ -88,7 +103,7 @@ jobs:
       # because they need no AWS credentials at all, which means a policy
       # regression fails in the first job rather than after an OIDC assume.
       - name: Test
-        run: pnpm run test --filter=...[origin/${{ github.base_ref }}]
+        run: pnpm run test --concurrency=2 --filter=...[origin/${{ github.base_ref }}]
 
   synth-and-diff:
     name: synth + cdk diff (gha-plan)

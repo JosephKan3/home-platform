@@ -87,8 +87,13 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
+      # --concurrency=2: see ci.yml's Test step comment. check runs lint,
+      # typecheck, and test together across all 5 packages at once; without
+      # this, the same jest-worker-process pile-up that got the runner killed
+      # on two Dependabot CI runs reproduced here on main too (first seen
+      # 2026-10-04).
       - name: Check
-        run: pnpm run check
+        run: pnpm run check --concurrency=2
 
   # BootstrapStack is normally deployed by hand. This job exists so a role policy
   # change can ship through the repo when SSO is not to hand, and it runs only
