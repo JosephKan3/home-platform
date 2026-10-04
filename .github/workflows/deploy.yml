@@ -287,18 +287,27 @@ jobs:
           npm run build
           npx next export
 
+      # --outputs-file, not a separate `aws cloudformation describe-stacks`
+      # call: gha-deploy-prod's own policy grants nothing but
+      # sts:AssumeRole on the four cdk-hnbprod-*-role ARNs (least privilege --
+      # see its GhaDeployProdRoleDefaultPolicy). `cdk deploy` can read the
+      # stack back because it assumes cdk-hnbprod-deploy-role internally for
+      # the duration of the CDK CLI process; a standalone `aws cloudformation
+      # describe-stacks` afterwards runs under gha-deploy-prod's own bare
+      # identity instead and is denied with AccessDenied on
+      # cloudformation:DescribeStacks. This surfaced the first time this step
+      # actually ran in CI.
       - name: Deploy PersonalSiteStack
         run: >-
           pnpm --filter @platform/personal-site exec cdk deploy PersonalSiteStack
           --require-approval never
           -c siteSourcePath=${{ github.workspace }}/personal-website/out
+          --outputs-file ${{ github.workspace }}/personal-site-outputs.json
 
       - name: Report the distribution domain
         run: |
-          aws cloudformation describe-stacks \
-            --stack-name PersonalSiteStack \
-            --query "Stacks[0].Outputs[?OutputKey=='DistributionDomainName'].OutputValue" \
-            --output text
+          jq -r '.PersonalSiteStack.DistributionDomainName' \
+            ${{ github.workspace }}/personal-site-outputs.json
 
   # Step 5 — the apex cutover. Deliberately NOT automatic.
   #
