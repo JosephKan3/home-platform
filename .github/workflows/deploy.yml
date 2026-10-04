@@ -115,6 +115,11 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_PROD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-deploy-bootstrap
+      # See the deploy-prod job's "Build workspace packages" step comment: the
+      # direct `pnpm --filter ... exec cdk` pattern below bypasses turbo's
+      # dependsOn-driven build of @platform/config / @platform/constructs.
+      - name: Build workspace packages
+        run: pnpm run build
       - name: Deploy BootstrapStack
         run: >-
           pnpm --filter @platform/infra-bootstrap exec cdk deploy BootstrapStack
@@ -219,6 +224,19 @@ jobs:
       - name: Confirm the assumed identity
         run: aws sts get-caller-identity
 
+      # `cdk deploy` below invokes each stack package directly with
+      # `pnpm --filter ... exec cdk deploy`, which bypasses turbo's task graph
+      # entirely -- unlike `pnpm run synth` elsewhere in this file, which goes
+      # through `turbo run synth` and gets @platform/config and
+      # @platform/constructs built first via synth's `dependsOn: ["^build"]`
+      # in turbo.json. Without this step, `cdk deploy` fails at import time with
+      # "Cannot find module '@platform/config'" / "'@platform/constructs'",
+      # since those workspace packages only exist as consumable modules after
+      # their own `tsc -b` populates dist/. This surfaced the first time
+      # deploy-prod actually ran end to end through CI.
+      - name: Build workspace packages
+        run: pnpm run build
+
       # Step 2 of the order at the top of this file.
       #
       # GovernanceStack targets the MANAGEMENT account, which deliberately has no
@@ -295,6 +313,10 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_PROD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-apex-cutover-${{ github.run_id }}
+
+      # See the deploy-prod job's "Build workspace packages" step comment.
+      - name: Build workspace packages
+        run: pnpm run build
 
       # Diff first, and read it. It should show exactly two changes: the apex A
       # record replaced by an ALIAS, and the www CNAME replaced by an ALIAS.
