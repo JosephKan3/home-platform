@@ -1030,17 +1030,17 @@ Phase 0 is done when **all** of these are true.
 - [ ] A deliberate `SubnetType.PRIVATE_WITH_EGRESS` in a scratch branch **fails CI** — not
       exercised this session; the Aspect unit tests above prove the check exists and fails
       synth locally, but an actual CI run on a real PR with this violation has not been done
-- [ ] A budget alert has fired at least once (set the threshold to $0.01 temporarily to
-      prove it) — **in progress**. `phase0-alert-probe` ($0.01 MONTHLY, `ACTUAL > $0`) was
-      created in step 10; budgets take ~24h before their first evaluation. Not yet fired as of
-      this session. Check `aws budgets describe-budget --account-id $env:MGMT_ACCOUNT_ID
-      --budget-name phase0-alert-probe --profile mgmt` and watch for the alert email, then
-      **delete the probe budget** once confirmed — it is not a permanent guardrail
-- [ ] Cost allocation tags appear in Cost Explorer — **pending**, same ~24h billing-data
-      ingestion delay as above (step 10). `aws ce list-cost-allocation-tags` still returns
-      empty as of this session
-- [ ] The monthly bill is **under $8** — not yet checkable; the account is under 24h old, no
-      billing cycle has completed
+- [x] A budget alert has fired at least once — confirmed:
+      `phase0-alert-probe`'s `ACTUAL > $0.01` notification shows
+      `NotificationState: ALARM` (`aws budgets describe-budget-notifications-for-account`),
+      against `$0.828` actual spend. The probe budget has been **deleted**
+      (`aws budgets delete-budget`) now that it proved itself — it was never a permanent
+      guardrail, `platform-monthly-cost` ($10/mo, from step 9) is
+- [x] Cost allocation tags appear in Cost Explorer — confirmed: `app`, `env`, `owner` all
+      appeared (`Status: Inactive`) once billing data caught up, and have been activated
+      (`aws ce update-cost-allocation-tags-status`, now `Status: Active` for all three)
+- [x] The monthly bill is **under $8** — confirmed: September (the bootstrap month) billed
+      effectively $0 (`-$0.0000003`, a rounding artifact); October month-to-date is $0.81
 - [x] A teardown runbook exists for everything built in this phase — confirmed present:
       `docs/runbooks/teardown-phase-0.md`, `docs/runbooks/dns-rollback.md`,
       `docs/runbooks/break-glass.md`
