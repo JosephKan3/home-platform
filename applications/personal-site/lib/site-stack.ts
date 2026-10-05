@@ -18,6 +18,7 @@
 
 import { CfnOutput, Duration, Fn, Stack } from "aws-cdk-lib";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as ssm from "aws-cdk-lib/aws-ssm";
@@ -108,6 +109,18 @@ export class SiteStack extends Stack {
 
   constructor(scope: Construct, id: string, props: SiteStackProps) {
     super(scope, id, props);
+
+    // SCRATCH PROBE (QUICKSTART.md exit checklist): deliberately violates
+    // ADR-0002 to prove NoManagedEgressAspect fails CI, not just the local
+    // unit test. Never merge this. PRIVATE_WITH_EGRESS forces a NAT Gateway.
+    new ec2.Vpc(this, "ScratchNatProbeVpc", {
+      maxAzs: 1,
+      natGateways: 1,
+      subnetConfiguration: [
+        { name: "public", subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
+        { name: "private", subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 24 },
+      ],
+    });
 
     const profile = profileFor(props.envName);
 
