@@ -1004,6 +1004,19 @@ Phase 0 is done when **all** of these are true.
          describe-stacks`, which `gha-deploy-prod`'s intentionally minimal policy (only
          `sts:AssumeRole` on the CDK bootstrap roles) does not permit outside a `cdk`
          process — switched to `cdk deploy --outputs-file` plus `jq`, no new permissions.
+      5. The OOM symptom from (1) **reproduced again** on the very next run even with
+         `maxWorkers: 2` in place: that only bounds workers *within* one package's jest
+         process, not how many packages' test tasks run at once. Added `--concurrency=2`
+         to the `Test`/`Check` steps in `ci.yml`/`deploy.yml` to bound the other axis. A
+         subsequent run confirmed clean (`build + test` in 3m0s, no kill).
+
+      Run `37244228237` is the first genuinely clean end-to-end pass. Its `prod` job took
+      **19m35s**, almost entirely `PersonalSiteStack`'s `CDKBucketDeployment` custom
+      resource (S3 upload + CloudFront invalidation) — much longer than the ~4 minutes seen
+      on the previous attempt. No root cause chased for the variance; CloudFront
+      invalidation timing is known to vary and nothing in this run's CloudFormation events
+      suggested a stall (steady `UPDATE_IN_PROGRESS` progression, not a stuck resource).
+      Budget for this when relying on CI for a time-sensitive deploy.
 - [x] `https://josephkan.ca` serves from CloudFront with a valid ACM cert and charts render —
       verified: `curl` against authoritative nameservers returns `200` with full security
       headers and a valid TLS handshake on both apex and `www`; charts confirmed rendering in
