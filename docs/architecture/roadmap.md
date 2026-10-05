@@ -79,7 +79,7 @@ dev role is denied a prod-tagged action.
 **Budget: $8-15/mo** (revised down — neither application needs RDS yet)
 
 > **Executable plan: [`../phase-1-action-plan.md`](../phase-1-action-plan.md)** — written
-> against the real `v0-notam-search-app` repo (cloned as a sibling checkout, same as Phase 0
+> against the real `NewNotams.Net` repo (cloned as a sibling checkout, same as Phase 0
 > did for the personal site), not just this summary. It corrects several things this
 > checklist gets wrong or leaves vague: `newnotams.net` is registered at NameCheap with
 > nameservers already pointed at Vercel, not GoDaddy; the real secret list is 9 parameters,

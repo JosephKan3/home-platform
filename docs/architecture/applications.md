@@ -11,7 +11,9 @@ Aviation weather and NOTAM briefing tool for Canadian airspace. Proxies and refo
 Nav Canada `plan.navcanada.ca` alpha API, with saved searches, NOTAM dismissal tracking, and
 scheduled web-push notifications.
 
-**Repo:** `github.com/JosephKan3/v0-notam-search-app`
+**Repo:** `github.com/JosephKan3/NewNotams.Net` (renamed from `v0-notam-search-app`
+2026-10-05, mid-Phase-1; the old name still appears in earlier git history and
+some external references)
 **Currently:** Vercel, Next.js 16 App Router, React 19, Upstash Redis, Auth.js v5 (Google OAuth
 + credentials), Web Push via VAPID, external hourly cron hitting `/api/notify`.
 

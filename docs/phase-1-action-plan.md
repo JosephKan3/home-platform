@@ -28,7 +28,8 @@ Phase 0's plan was corrected repeatedly by what the code actually said rather th
 roadmap assumed. Same discipline here, done up front instead of mid-execution:
 
 - **`applications.md` listed two API routes it didn't fully enumerate.** The real repo
-  (`JosephKan3/v0-notam-search-app`, cloned to a sibling checkout the same way
+  (`JosephKan3/NewNotams.Net` — renamed from `v0-notam-search-app` 2026-10-05, mid-Phase-1,
+  cloned to a sibling checkout the same way
   `personal-page` was in Phase 0) has **seven** routes: `auth/[...nextauth]`, `dismissals`,
   `notify`, `push/subscribe`, `saved-searches`, `schedule`, `weather`. All API-route behavior
   carries over unchanged under OpenNext — this is a lift, not a rewrite — but the inventory
@@ -83,7 +84,7 @@ roadmap assumed. Same discipline here, done up front instead of mid-execution:
   write permission was.
 - **The app repo stays a separate repo**, same pattern as `personal-website`. NewNotams's
   CDK stacks live in this monorepo at `applications/newnotams/`; the actual Next.js source
-  stays at `github.com/JosephKan3/v0-notam-search-app`, checked out at deploy time — not
+  stays at `github.com/JosephKan3/NewNotams.Net`, checked out at deploy time — not
   merged into the monorepo. ADR-0004 describes `applications/newnotams/{infra,src}/` as if
   `src/` lives here; in practice, following the `personal-site` precedent, `infra/` here and
   a cross-repo checkout in CI is the actual working pattern. Update ADR-0004 if this is
@@ -93,9 +94,37 @@ roadmap assumed. Same discipline here, done up front instead of mid-execution:
 
 ## 1. Stage A — Decide the two things that are hard to change later
 
+**Done 2026-10-05.** The version decision: bumped `next` `16.1.6` → `16.3.8`, confirmed with a
+real `next build` (clean compile, clean typecheck) and a real `npx open-next build`
+(`@opennextjs/aws@4.1.7`, full expected output bundle — server function, assets,
+revalidation/warmer/image-optimization functions, middleware). Moved up from Stage F while
+already touching this: removed `typescript.ignoreBuildErrors`, which was hiding two real
+(trivial, dead-code) type errors in `auth.ts` — `AzureAD` is now `MicrosoftEntraID` with a
+different config shape, and a stale `@ts-expect-error` on `trustHost`. Also bumped
+`next-auth` `5.0.0-beta.31` → `5.0.0-beta.32`: the pinned version was in `@auth/core`'s
+vulnerable range for three CVEs, including a critical one (OAuth state/nonce/PKCE check
+cookies not bound to the originating provider). `npm audit` went from 5 vulnerabilities
+(2 critical) to 3 (0 critical) — the rest are in `lodash` (via `recharts`, display-only) and
+`browserslist` (build-time only via `autoprefixer`), left for a separate decision since
+fixing them means a `recharts` major bump. Full detail in the commit message,
+`JosephKan3/NewNotams.Net@bf07da6`. **The repo was also renamed** mid-work, from
+`v0-notam-search-app` to `NewNotams.Net` — not something this plan did; GitHub's own
+redirect caught it on push. Every reference in this plan, `applications.md`, and the
+roadmap has been updated to the new name.
+
+> **OpenNext's own build has a known Windows-only bug** (confirmed, not assumed — hit it
+> directly): the image-optimization function's dependency-install step constructs an invalid
+> temp-directory path on Windows (`mkdtemp` given a path with a literal drive-letter colon in
+> the middle) and fails. OpenNext's own docs already say it is "not fully compatible with
+> Windows" and recommend WSL. Not a blocker for this plan — the real build runs in CI on
+> Linux (§1's own build-location decision below) — but if anyone tries `npx open-next build`
+> locally on Windows to sanity-check something, expect this exact failure after
+> "OpenNext build complete" prints; it is cosmetic at that point, not a sign the build itself
+> failed.
+
 | Decision | Recommendation | Why it's hard to change |
 | --- | --- | --- |
-| **Bump Next.js to clear the OpenNext version floor, or pin OpenNext down?** | Bump Next to the latest `16.x` patch first; same major version, lowest-risk direction | Pinning OpenNext to an older version now means revisiting this the moment a real `@opennextjs/aws` bug fix is needed |
+| **Bump Next.js to clear the OpenNext version floor, or pin OpenNext down?** | **Decided: bumped Next.js.** See above. | Pinning OpenNext to an older version now means revisiting this the moment a real `@opennextjs/aws` bug fix is needed |
 | **Keep `CRON_SECRET` bearer check on the GET path, or drop it for a non-public invoke?** | **Drop the public GET path entirely.** EventBridge invokes the Lambda directly; nothing calls the HTTP route for cron anymore. `CRON_SECRET` becomes unused. | If kept "just in case," it is a public endpoint only pretending not to be one |
 | **Where does the OpenNext build happen — in this monorepo's CI, or vendored output checked into the app repo?** | **Build in CI**, same pattern as `personal-website`'s static export: checkout → `npm install` → `npx open-next build` → deploy the `.open-next/` output. Nothing built gets committed. | Committing build output couples the two repos' histories in a way that defeats keeping them separate |
 
@@ -157,7 +186,7 @@ construct actually produces the resources it claims (CloudFront distribution, S3
 ## 3. Stage C — NewNotams' own stack
 
 `applications/newnotams/` in this monorepo. CDK only — the app source stays in
-`v0-notam-search-app`, checked out at deploy time (§0, last bullet).
+`NewNotams.Net`, checked out at deploy time (§0, last bullet).
 
 ### C1. Seed the SSM parameters
 
