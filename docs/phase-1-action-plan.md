@@ -132,8 +132,45 @@ roadmap has been updated to the new name.
 
 ## 2. Stage B — The OpenNext construct
 
-New platform work. Build `packages/constructs/src/opennext-site/` before touching NewNotams'
-own stack, the same order Phase 0 built `StaticSite` before `PersonalSiteStack` consumed it.
+**Done 2026-10-05.** `packages/constructs/src/opennext-site/` — `OpenNextSite`, modeled on the
+official OpenNext reference CDK implementation
+(opennext.js.org/aws/reference-implementation), adapted to this platform's conventions the
+way `StaticSite` was for a plain static export.
+
+Confirmed empirically, not assumed, on the two load-bearing design questions this section
+originally posed:
+
+- **The image-optimizer Lambda is genuinely dead weight for this app.** Next's own source
+  (`get-img-props.ts`) confirms `images.unoptimized: true` means `next/image` never generates
+  a `/_next/image?...` request at all — and even a direct hit on that route 404s before the
+  server ever calls the optimizer. Grep across `app/` and `lib/` found zero
+  `revalidateTag`/`revalidatePath`/`export const revalidate` usage, confirming the DynamoDB
+  tag cache and SQS revalidation queue are equally dead weight. `includeImageOptimization`,
+  `includeTagCache`, `includeRevalidation` all default to `false` for exactly this reason —
+  NewNotams needs none of them, and provisioning them anyway would be real, billed AWS
+  resources for nothing.
+- **`open-next.config.ts`'s `dangerous.disableTagCache: true`** removes the DynamoDB init
+  function from the manifest's `additionalProps`, confirmed by rebuilding and diffing the
+  manifest before/after. A synth-time assertion in the construct
+  (`assertTagCacheAgreement`) checks this against `includeTagCache` and throws if they
+  disagree, so a mismatch between the app's build and the construct's props fails at synth,
+  not as a runtime `ResourceNotFoundException` days later.
+
+One real gotcha found and fixed: `open-next.output.json`'s `bundle`/`copy.from` paths are
+written relative to the app's project root (confirmed against a real build —
+`.open-next/server-functions/default`, not `server-functions/default`, even though the
+manifest lives inside `.open-next/`), not relative to the output directory itself. The
+construct resolves them against `openNextOutputPath`'s parent so synth is correct regardless
+of the CDK process's own working directory.
+
+Verified two ways: 16 unit tests (security posture, opt-in pieces defaulting off and
+provisioning correctly when requested, zero unsuppressed cdk-nag errors with every optional
+piece both off and on), and a direct synth against NewNotams' real `npx open-next build`
+output — correct resource counts (2 Lambda functions: server + the BucketDeployment handler;
+no DynamoDB/SQS) and correct CloudFront behaviors (`_next/image*` correctly absent).
+
+New platform work. Built before touching NewNotams' own stack, the same order Phase 0 built
+`StaticSite` before `PersonalSiteStack` consumed it.
 
 ### B1. What the construct owns
 
