@@ -113,7 +113,11 @@ export class SiteStack extends Stack {
     // SCRATCH PROBE (QUICKSTART.md exit checklist): deliberately violates
     // ADR-0002 to prove NoManagedEgressAspect fails CI, not just the local
     // unit test. Never merge this. PRIVATE_WITH_EGRESS forces a NAT Gateway.
-    new ec2.Vpc(this, "ScratchNatProbeVpc", {
+    // The VPC7 (no flow log) suppression below is only here so the unrelated
+    // cdk-nag.test.ts suite doesn't fail first and short-circuit the Test job
+    // before synth-and-diff (where NoManagedEgressAspect actually runs) gets
+    // a chance to execute at all.
+    const scratchVpc = new ec2.Vpc(this, "ScratchNatProbeVpc", {
       maxAzs: 1,
       natGateways: 1,
       subnetConfiguration: [
@@ -121,6 +125,12 @@ export class SiteStack extends Stack {
         { name: "private", subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 24 },
       ],
     });
+    suppressNagRules(scratchVpc, [
+      {
+        id: "AwsSolutions-VPC7",
+        reason: "Scratch probe for ADR-0002's NAT Gateway check, never merged. See QUICKSTART.md.",
+      },
+    ]);
 
     const profile = profileFor(props.envName);
 
