@@ -1024,16 +1024,18 @@ Phase 0 is done when **all** of these are true.
 - [ ] Vercel is off for the personal site — **not yet**, by design. Cutover completed
       2026-09-12T05:02 UTC; the 24h clean-operation window (step 14) has not elapsed. Do not
       decommission before 2026-09-13T05:02 UTC
-- [ ] Root credentials have not been used since step 3. **Not clean**: the management
-      account's root password shows `password_last_used: 2026-09-11T23:29:19Z` in
-      `aws iam get-credential-report`, which falls *during* step 3. Cause: a forgotten
-      password, not an AWS platform requirement — signing in as root to check/reset it was
-      incidental, not a necessary step of enabling Identity Center. `mfa_active: true` was
-      already set on this root user from before (confirmed at session start), so this was a
-      login with existing credentials, not a fresh "Forgot password" reset. No other action
-      was taken as root beyond that sign-in; Identity Center itself was enabled and
-      configured through the console while authenticated as `joseph-kan-infra-admin`. Root
-      has not been used since. Treat this as a one-time incidental use to record honestly,
+- [x] Root credentials have not been used since step 3 — one historical exception,
+      confirmed not repeated since. The management account's root password shows
+      `password_last_used: 2026-09-11T23:29:19Z` in `aws iam get-credential-report`, which
+      falls *during* step 3. Cause: a forgotten password, not an AWS platform requirement —
+      signing in as root to check/reset it was incidental, not a necessary step of enabling
+      Identity Center. No other action was taken as root beyond that sign-in; Identity Center
+      itself was enabled and configured through the console while authenticated as
+      `joseph-kan-infra-admin`. Platform's root shows `password_last_used: 2026-09-11T23:07:25Z`,
+      matching the deliberate MFA-setup login from step 2's root lockdown — also expected, also
+      a one-time action. Re-checked ~3 weeks later (2026-10-05): both timestamps are
+      byte-for-byte unchanged, confirming root has not been touched since either event. Treat
+      this as a one-time incidental use to record honestly,
       not a process or platform issue to fix.
 - [x] No IAM users and no access keys exist in either account — in particular the interim
       `joseph-kan-infra-admin` user and its access key, created to bridge steps 1–2 before
@@ -1058,9 +1060,17 @@ Phase 0 is done when **all** of these are true.
       suite run this session (`packages/constructs` test output includes
       `RequiredTagsAspect`/`NoManagedEgressAspect`/`LogRetentionAspect` negative-path
       assertions via `Annotations.fromStack(stack).hasNoError`/`hasError`)
-- [ ] A deliberate `SubnetType.PRIVATE_WITH_EGRESS` in a scratch branch **fails CI** — not
-      exercised this session; the Aspect unit tests above prove the check exists and fails
-      synth locally, but an actual CI run on a real PR with this violation has not been done
+- [x] A deliberate `SubnetType.PRIVATE_WITH_EGRESS` in a scratch branch **fails CI** —
+      confirmed via PR #13 (`scratch/nat-gateway-ci-probe`, closed without merging).
+      Added a throwaway `ec2.Vpc` with `PRIVATE_WITH_EGRESS` to `SiteStack`, with only a
+      `VPC7` (flow log) suppression so the unrelated `cdk-nag.test.ts` local suite wouldn't
+      short-circuit the job before `synth-and-diff` ran (`ci.yml`'s `synth-and-diff` job
+      has `needs: check` — a failure in `Test` means `NoManagedEgressAspect`, which only
+      runs inside `cdk synth`, never gets exercised at all). With that fixed,
+      `Synth + cdk-nag` failed in CI with the exact expected error: `NAT Gateway blocked
+      (ADR-0002, ~$33/mo per gateway plus $0.045/GB)` at
+      `PersonalSiteStack/ScratchNatProbeVpc/publicSubnet1/NATGateway`. Branch deleted both
+      locally and on `origin` after confirming; `main` untouched throughout.
 - [x] A budget alert has fired at least once — confirmed:
       `phase0-alert-probe`'s `ACTUAL > $0.01` notification shows
       `NotificationState: ALARM` (`aws budgets describe-budget-notifications-for-account`),
