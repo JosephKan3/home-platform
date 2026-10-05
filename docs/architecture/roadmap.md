@@ -78,6 +78,16 @@ dev role is denied a prod-tagged action.
 
 **Budget: $8-15/mo** (revised down — neither application needs RDS yet)
 
+> **Executable plan: [`../phase-1-action-plan.md`](../phase-1-action-plan.md)** — written
+> against the real `v0-notam-search-app` repo (cloned as a sibling checkout, same as Phase 0
+> did for the personal site), not just this summary. It corrects several things this
+> checklist gets wrong or leaves vague: `newnotams.net` is registered at NameCheap with
+> nameservers already pointed at Vercel, not GoDaddy; the real secret list is 9 parameters,
+> read from `vercel env ls`, not guessed from the code; `@opennextjs/aws` has a Next.js
+> version floor to clear first; and the VPC item below is deferred to Phase 2, since neither
+> application needs one. The checklist below is the summary; the action plan is what you
+> work from.
+
 - [ ] **Migrate NewNotams off Vercel.** Next.js on **Lambda via OpenNext**, CloudFront in
       front, **no VPC attachment**. Keep Upstash Redis initially — it's an HTTPS client, so
       it works unchanged from a VPC-less Lambda. Migrating compute and datastore in one step
