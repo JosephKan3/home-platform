@@ -149,6 +149,70 @@ describe("distribution", () => {
       }),
     });
   });
+
+  test("forwards the viewer Host header to the origin as x-forwarded-host on the default behavior", () => {
+    // Regression test for a real bug: without this, Next.js (and Auth.js's
+    // trustHost specifically) only ever sees the raw Lambda Function URL
+    // hostname as the request's Host, since ALL_VIEWER_EXCEPT_HOST_HEADER
+    // deliberately replaces it before forwarding to the origin. Confirmed
+    // live: /api/auth/providers returned *.lambda-url.*.on.aws signin/
+    // callback URLs instead of the CloudFront domain, which would break
+    // Google OAuth's registered redirect URI. See
+    // createHostForwardingFunction's doc comment.
+    template.hasResourceProperties("AWS::CloudFront::Function", {
+      FunctionCode: Match.stringLikeRegexp("x-forwarded-host"),
+    });
+    template.resourceCountIs("AWS::CloudFront::Function", 1);
+
+    const distributions = template.findResources("AWS::CloudFront::Distribution");
+    const [, distribution] = Object.entries(distributions)[0]!;
+    const config = (distribution as { Properties: { DistributionConfig: Record<string, unknown> } })
+      .Properties.DistributionConfig;
+    const defaultBehavior = config["DefaultCacheBehavior"] as Record<string, unknown>;
+    expect(JSON.stringify(defaultBehavior["FunctionAssociations"])).toContain("viewer-request");
+  });
+
+  test("also attaches to every additional server/image behavior, but not S3 ones", () => {
+    // The placeholder-source manifest has only the catch-all `*` pattern, so
+    // this needs the real fixture manifest to exercise additionalBehaviors
+    // at all.
+    const withFixture = synth({
+      includeTagCache: true,
+      includeRevalidation: true,
+      openNextOutputPath: FIXTURE_OUTPUT_PATH,
+      usePlaceholderSource: false,
+    });
+    const distributions = withFixture.findResources("AWS::CloudFront::Distribution");
+    const [, distribution] = Object.entries(distributions)[0]!;
+    const config = (distribution as { Properties: { DistributionConfig: Record<string, unknown> } })
+      .Properties.DistributionConfig;
+    const cacheBehaviors = config["CacheBehaviors"] as Array<Record<string, unknown>> | undefined;
+    expect(cacheBehaviors).toBeDefined();
+    expect(cacheBehaviors!.length).toBeGreaterThan(0);
+
+    // `TargetOriginId` is a generated CDK token (e.g.
+    // "TestStackSiteDistributionOrigin169649692"), not a meaningful name, so
+    // it cannot distinguish S3 from Lambda behaviors directly. Whether
+    // `originRequestPolicy` was set can: this construct only sets one for
+    // non-S3 (server/image) behaviors (see createDistribution — `isS3Pattern
+    // ? undefined : ...`), so its presence is the real discriminator.
+    let sawS3Behavior = false;
+    let sawNonS3Behavior = false;
+    for (const behavior of cacheBehaviors!) {
+      const isS3Behavior = behavior["OriginRequestPolicyId"] === undefined;
+      if (isS3Behavior) {
+        sawS3Behavior = true;
+        expect(behavior["FunctionAssociations"]).toBeUndefined();
+      } else {
+        sawNonS3Behavior = true;
+        expect(JSON.stringify(behavior["FunctionAssociations"])).toContain("viewer-request");
+      }
+    }
+    // Confirms the fixture manifest actually exercises both branches, so
+    // this test cannot pass vacuously.
+    expect(sawS3Behavior).toBe(true);
+    expect(sawNonS3Behavior).toBe(true);
+  });
 });
 
 describe("handles for the consuming stack", () => {

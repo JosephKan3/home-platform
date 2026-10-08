@@ -44,10 +44,24 @@ export const APP_NAME = "newnotams";
 export const NOTIFY_INTERVAL = Duration.hours(1);
 
 /**
- * SSM SecureString/String parameters, seeded out of band (Phase 1 action
- * plan §3, C1). `CRON_SECRET` is deliberately absent — it has no AWS
- * equivalent, since EventBridge invokes the Lambda directly and there is no
- * public endpoint for it to protect.
+ * SSM parameters, seeded out of band (Phase 1 action plan §3, C1).
+ * `CRON_SECRET` is deliberately absent — it has no AWS equivalent, since
+ * EventBridge invokes the Lambda directly and there is no public endpoint
+ * for it to protect.
+ *
+ * Only `vapidPublicKey` and `vapidSubject` are plain `String` parameters —
+ * the public VAPID key is, by design, public (it ships to the browser),
+ * and the subject is a `mailto:` address, not a secret. Every other name
+ * here, **including `googleClientId`**, is `SecureString` and must be read
+ * with `StringParameter.valueFromLookup` — see `grantServerSecrets`'s
+ * comment for the full account of why neither of the two more obvious APIs
+ * works for a `SecureString` baked into a Lambda environment variable.
+ * `googleClientId` was deliberately seeded as `SecureString` (the action
+ * plan's own §3 C1 commands say so); an earlier version of this comment
+ * claimed it was non-secret and safe as plain `String`, which was wrong
+ * and caused a real deploy failure — "Parameters [...] referenced by
+ * template have types not supported by CloudFormation" — since the actual
+ * stored type was `SecureString` all along.
  */
 export const newNotamsParameterNames = {
   googleClientId: `/${APP_NAME}/auth/google-id`,
@@ -168,36 +182,76 @@ export class NewNotamsStack extends Stack {
    * The app's own secrets (Google OAuth, VAPID, Upstash) — `OpenNextSite`
    * owns none of this; see its "What it does not own" doc comment.
    *
-   * Populated as Lambda environment variables at deploy time via SSM
-   * dynamic references (`StringParameter.valueForStringParameter` /
-   * `valueForTypedStringParameterV2`), not fetched by the handler at
-   * runtime the way oanda-fetcher fetches its OANDA credentials. The
-   * difference: oanda-fetcher's values are read once per *cold start* and
-   * cached across warm invocations deliberately to minimize KMS decrypts
-   * (SiteStack's lambda/oanda-fetcher/index.ts comment) because that
-   * function is invoked hourly and almost always warm. The Next.js server
-   * function here is invoked far more often (every page view, not once an
-   * hour) and Auth.js/next-auth read these values synchronously at module
-   * load inside auth.ts, not inside an async handler this construct
-   * controls — so they must already be present as plain environment
-   * variables before the Next.js server code runs at all, not fetched by a
-   * runtime call this stack would have to inject into someone else's
+   * Populated as Lambda environment variables at deploy time, not fetched
+   * by the handler at runtime the way oanda-fetcher fetches its OANDA
+   * credentials. That alternative was considered and rejected for this
+   * function specifically: Auth.js/next-auth read these values
+   * *synchronously at module load* inside `auth.ts` (`process.env.AUTH_GOOGLE_ID`
+   * evaluated as the module is first imported, not inside any async handler
+   * this construct controls), so they must already be present as plain
+   * environment variables before the Next.js server code runs at all —
+   * there is no hook to inject an awaited SSM call into someone else's
    * module-load code path.
+   *
+   * Getting the *value itself* into that environment variable turned out to
+   * have no good answer, only a real AWS-imposed constraint with one
+   * working option. Two were tried and failed, found out via real deploy
+   * attempts, not documentation review alone:
+   *
+   * 1. `StringParameter.valueForStringParameter` — generates a
+   *    CloudFormation template *Parameter* of SSM type
+   *    `AWS::SSM::Parameter::Value<String>`. CloudFormation rejects this
+   *    outright for anything stored as `SecureString`: "Parameters [...]
+   *    referenced by template have types not supported by CloudFormation."
+   *    Hit this on the first deploy attempt, before any resource was
+   *    created.
+   * 2. `SecretValue.ssmSecure(...).unsafeUnwrap()` — generates a
+   *    `{{resolve:ssm-secure:...}}` dynamic reference. This looks like
+   *    exactly the documented, intended way to use a `SecretValue` as a
+   *    Lambda environment variable (`SecretValue`'s own doc comment names
+   *    this exact case), and CDK's synth-time template validator only
+   *    *warns* about it ("can only be used in resource properties" — true,
+   *    and `Environment.Variables` on an `AWS::Lambda::Function` *is* a
+   *    resource property). But CloudFormation's actual change-set creation
+   *    rejects it anyway, with "SSM Secure reference is not supported in:
+   *    AWS::Lambda::Function/Properties/Environment/Variables/...". AWS's
+   *    own dynamic-references documentation confirms why: `ssm-secure`
+   *    dynamic references work only on a short, fixed allowlist of
+   *    resource/property pairs (RDS `MasterUserPassword`, IAM User
+   *    `LoginProfile.Password`, ElastiCache `AuthToken`, a few others) —
+   *    Lambda's `Environment.Variables` is not on that list at all, for
+   *    any resource type, full stop. Hit this on the second deploy attempt.
+   *
+   * What actually works: `StringParameter.valueFromLookup`, which performs
+   * a real `ssm:GetParameter` call *during synth* (CDK's own "environmental
+   * context provider" mechanism — the same machinery behind `fromLookup`
+   * AZ/AMI context lookups) and bakes the resolved plaintext directly into
+   * the template as a literal string, before any CloudFormation API call
+   * happens at all. This genuinely means the secret value is visible in the
+   * synthesized template and in `cdk.context.json` (where CDK caches the
+   * looked-up value across runs) — a real, deliberate tradeoff forced by
+   * the constraint above, not a security regression chosen for convenience.
+   * `cdk.context.json` is gitignored repo-wide specifically because of this.
+   *
+   * `googleClientId`, `vapidPublicKey` and `vapidSubject` are plain `String`
+   * parameters (not `SecureString` — see `newNotamsParameterNames`'s own
+   * doc comment on why), so they keep using the ordinary, non-secret
+   * `valueForStringParameter`, which has no such restriction.
    */
   private grantServerSecrets(): void {
     const fn = this.site.serverFunction;
 
     fn.addEnvironment(
       "AUTH_GOOGLE_ID",
-      ssm.StringParameter.valueForStringParameter(this, newNotamsParameterNames.googleClientId),
+      ssm.StringParameter.valueFromLookup(this, newNotamsParameterNames.googleClientId),
     );
     fn.addEnvironment(
       "AUTH_GOOGLE_SECRET",
-      ssm.StringParameter.valueForStringParameter(this, newNotamsParameterNames.googleClientSecret),
+      ssm.StringParameter.valueFromLookup(this, newNotamsParameterNames.googleClientSecret),
     );
     fn.addEnvironment(
       "AUTH_SECRET",
-      ssm.StringParameter.valueForStringParameter(this, newNotamsParameterNames.authSecret),
+      ssm.StringParameter.valueFromLookup(this, newNotamsParameterNames.authSecret),
     );
     fn.addEnvironment(
       "NEXT_PUBLIC_VAPID_PUBLIC_KEY",
@@ -205,7 +259,7 @@ export class NewNotamsStack extends Stack {
     );
     fn.addEnvironment(
       "VAPID_PRIVATE_KEY",
-      ssm.StringParameter.valueForStringParameter(this, newNotamsParameterNames.vapidPrivateKey),
+      ssm.StringParameter.valueFromLookup(this, newNotamsParameterNames.vapidPrivateKey),
     );
     fn.addEnvironment(
       "VAPID_SUBJECT",
@@ -213,11 +267,11 @@ export class NewNotamsStack extends Stack {
     );
     fn.addEnvironment(
       "KV_REST_API_URL",
-      ssm.StringParameter.valueForStringParameter(this, newNotamsParameterNames.kvUrl),
+      ssm.StringParameter.valueFromLookup(this, newNotamsParameterNames.kvUrl),
     );
     fn.addEnvironment(
       "KV_REST_API_TOKEN",
-      ssm.StringParameter.valueForStringParameter(this, newNotamsParameterNames.kvToken),
+      ssm.StringParameter.valueFromLookup(this, newNotamsParameterNames.kvToken),
     );
 
     this.grantSsmRead(fn.role!, "ServerFunction", [
@@ -274,12 +328,17 @@ export class NewNotamsStack extends Stack {
       profile,
       description: "Hourly NOTAM notification sweep — direct invoke, no public endpoint.",
       scheduleDescription: "Hourly NewNotams notify sweep. Not real-time; matches notifyHours.",
+      // See grantServerSecrets's comment for the full account of why this
+      // needs StringParameter.valueFromLookup (a real synth-time
+      // ssm:GetParameter call, baked into the template as a literal) rather
+      // than either StringParameter.valueForStringParameter (fails synth
+      // for SecureString) or SecretValue.ssmSecure (CloudFormation rejects
+      // ssm-secure dynamic references in Lambda Environment.Variables
+      // specifically — confirmed by an actual deploy failure, not merely a
+      // CDK validator warning).
       environment: {
-        KV_REST_API_URL: ssm.StringParameter.valueForStringParameter(
-          this,
-          newNotamsParameterNames.kvUrl,
-        ),
-        KV_REST_API_TOKEN: ssm.StringParameter.valueForStringParameter(
+        KV_REST_API_URL: ssm.StringParameter.valueFromLookup(this, newNotamsParameterNames.kvUrl),
+        KV_REST_API_TOKEN: ssm.StringParameter.valueFromLookup(
           this,
           newNotamsParameterNames.kvToken,
         ),
@@ -287,7 +346,7 @@ export class NewNotamsStack extends Stack {
           this,
           newNotamsParameterNames.vapidPublicKey,
         ),
-        VAPID_PRIVATE_KEY: ssm.StringParameter.valueForStringParameter(
+        VAPID_PRIVATE_KEY: ssm.StringParameter.valueFromLookup(
           this,
           newNotamsParameterNames.vapidPrivateKey,
         ),

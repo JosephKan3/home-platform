@@ -649,10 +649,19 @@ export class OpenNextSite extends Construct {
     const s3Origin = S3BucketOrigin.withOriginAccessControl(this.bucket, {
       originPath: this.output.origins.s3.originPath,
     });
-    const serverOrigin = this.createFunctionUrlOrigin(this.serverFunction);
+    // Collected here, granted once the Distribution exists below — its
+    // physical ID is needed to scope each grant's sourceArn, and `this`
+    // class field isn't assigned until createDistribution (this method)
+    // returns, so it cannot be read from inside createFunctionUrlOrigin.
+    const functionsNeedingCloudFrontInvoke: lambda.Function[] = [];
+    const serverOrigin = this.createFunctionUrlOrigin(
+      this.serverFunction,
+      functionsNeedingCloudFrontInvoke,
+    );
 
     const serverCachePolicy = this.createServerCachePolicy();
     const staticCachePolicy = cloudfront.CachePolicy.CACHING_OPTIMIZED;
+    const hostForwardingFunction = this.createHostForwardingFunction();
 
     const defaultBehavior: cloudfront.BehaviorOptions = {
       origin: serverOrigin,
@@ -662,6 +671,9 @@ export class OpenNextSite extends Construct {
       cachePolicy: serverCachePolicy,
       originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
       compress: true,
+      functionAssociations: [
+        { function: hostForwardingFunction, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
+      ],
     };
 
     const additionalBehaviors: Record<string, cloudfront.BehaviorOptions> = {};
@@ -681,7 +693,7 @@ export class OpenNextSite extends Construct {
       const isS3Pattern = behavior.origin === "s3" || behavior.origin === undefined;
       additionalBehaviors[behavior.pattern] = {
         origin: isImagePattern
-          ? this.createFunctionUrlOrigin(this.imageFunction!)
+          ? this.createFunctionUrlOrigin(this.imageFunction!, functionsNeedingCloudFrontInvoke)
           : isS3Pattern
             ? s3Origin
             : serverOrigin,
@@ -693,10 +705,17 @@ export class OpenNextSite extends Construct {
           ? undefined
           : cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
         compress: true,
+        // S3 doesn't run Next.js code and has no notion of its own host;
+        // the server and image-optimizer origins both do (Next reads
+        // x-forwarded-host for canonical-URL generation — Auth.js's OAuth
+        // callback URLs in particular — see createHostForwardingFunction).
+        functionAssociations: isS3Pattern
+          ? undefined
+          : [{ function: hostForwardingFunction, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST }],
       };
     }
 
-    return new cloudfront.Distribution(this, "Distribution", {
+    const distribution = new cloudfront.Distribution(this, "Distribution", {
       domainNames: props.domainNames,
       certificate: this.resolveCertificate(props.certificate),
       enableLogging: true,
@@ -708,21 +727,99 @@ export class OpenNextSite extends Construct {
       defaultBehavior,
       additionalBehaviors,
     });
+
+    for (const fn of functionsNeedingCloudFrontInvoke) {
+      this.grantCloudFrontInvoke(fn, distribution);
+    }
+
+    return distribution;
   }
 
   /**
-   * A Lambda Function URL behind CloudFront, not the OpenNext reference
-   * implementation's un-authenticated public Function URL plus a CloudFront
-   * Function that forwards `x-forwarded-host`. CloudFront's native Lambda
-   * Function URL origin support (added after that reference implementation
-   * was written) signs the origin request with `OriginAccessControl` for
-   * Lambda, so the function URL itself needs no public invoke permission —
-   * strictly narrower than the reference's `FunctionUrlAuthType.NONE`.
+   * `FunctionUrlOrigin.withOriginAccessControl` only grants
+   * `lambda:InvokeFunctionUrl` on the function's resource policy. Since
+   * October 2025, AWS also requires `lambda:InvokeFunction` for every
+   * function URL invocation, including CloudFront's OAC-signed ones —
+   * without this second grant, CloudFront gets `403 Forbidden`
+   * (`AccessDeniedException`) from the function URL on every request, a
+   * real first-deploy failure this caught, not a documentation read.
+   * Scoped the same way AWS's own function-URL-auth docs recommend
+   * (`invokedViaFunctionUrl: true`, so this grant cannot be used to invoke
+   * the function through any other path) and to this one distribution's
+   * ARN specifically.
    */
-  private createFunctionUrlOrigin(fn: lambda.Function): cloudfront.IOrigin {
+  private grantCloudFrontInvoke(fn: lambda.Function, distribution: cloudfront.Distribution): void {
+    fn.addPermission("InvokeFunctionFromCloudFront", {
+      principal: new iam.ServicePrincipal("cloudfront.amazonaws.com"),
+      action: "lambda:InvokeFunction",
+      invokedViaFunctionUrl: true,
+      sourceArn: `arn:${Stack.of(this).partition}:cloudfront::${Stack.of(this).account}:distribution/${distribution.distributionId}`,
+    });
+  }
+
+  /**
+   * `ALL_VIEWER_EXCEPT_HOST_HEADER` (the origin request policy every
+   * non-S3 behavior uses) does exactly what its name says: the viewer's
+   * original `Host` header is deliberately replaced with the origin's own
+   * hostname before CloudFront forwards the request, because the origin
+   * — a Lambda Function URL — needs its own host to route correctly, not
+   * the viewer-facing domain. This is correct and necessary, but it also
+   * means Next.js never sees `newnotams.net` (or this distribution's own
+   * `dxxxx.cloudfront.net`) as the request's Host — only the raw
+   * `*.lambda-url.*.on.aws` hostname. Next.js (and Auth.js's `trustHost`
+   * specifically) falls back to `x-forwarded-host` when present, which is
+   * exactly what this function supplies — confirmed as a real,
+   * reproducible gap, not a theoretical one: a live deploy's
+   * `/api/auth/providers` returned Lambda-Function-URL-hosted
+   * `signinUrl`/`callbackUrl` values instead of the CloudFront domain,
+   * which would have broken Google OAuth's registered redirect URI, until
+   * this function was added. This is exactly what the official OpenNext
+   * reference CDK implementation's own `OpenNextCfFunction` does
+   * (`opennext.js.org/aws/reference-implementation`) — this construct
+   * needed the equivalent, not something OAC made unnecessary.
+   */
+  private createHostForwardingFunction(): cloudfront.Function {
+    return new cloudfront.Function(this, "HostForwardingFunction", {
+      comment: "Copies the viewer's Host header into x-forwarded-host for the origin.",
+      code: cloudfront.FunctionCode.fromInline(
+        "function handler(event) {\n" +
+          "  var request = event.request;\n" +
+          '  request.headers["x-forwarded-host"] = request.headers.host;\n' +
+          "  return request;\n" +
+          "}\n",
+      ),
+    });
+  }
+
+  /**
+   * A Lambda Function URL behind CloudFront, authenticated with OAC rather
+   * than the OpenNext reference implementation's un-authenticated
+   * `FunctionUrlAuthType.NONE`. CloudFront's native Lambda Function URL
+   * origin support (added after that reference implementation was written)
+   * signs the origin request with `OriginAccessControl`, so the function
+   * URL itself needs no public invoke permission — strictly narrower than
+   * the reference's `NONE`. The reference's *other* CloudFront Function,
+   * the one that forwards `x-forwarded-host`, is still needed regardless
+   * of auth type and is added separately — see
+   * `createHostForwardingFunction`.
+   *
+   * `fn` is appended to `needsCloudFrontInvoke` rather than granted the
+   * additional `lambda:InvokeFunction` permission (see
+   * `grantCloudFrontInvoke`) right here, because that grant needs the
+   * distribution's physical ID to scope its `sourceArn`, and this method
+   * runs — for the server function — before the `Distribution` this origin
+   * will belong to has been constructed at all. `createDistribution`
+   * applies the deferred grants once it has a real distribution to scope
+   * them to.
+   */
+  private createFunctionUrlOrigin(
+    fn: lambda.Function,
+    needsCloudFrontInvoke: lambda.Function[],
+  ): cloudfront.IOrigin {
     const functionUrl = fn.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.AWS_IAM,
     });
+    needsCloudFrontInvoke.push(fn);
     return FunctionUrlOrigin.withOriginAccessControl(functionUrl);
   }
 

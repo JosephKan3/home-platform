@@ -4,6 +4,13 @@ cdk.out/
 coverage/
 *.tsbuildinfo
 
+# `ssm.StringParameter.valueFromLookup` caches the real SSM value here at
+# synth time (NewNotamsStack reads SecureString secrets this way, since
+# CloudFormation's ssm-secure dynamic reference does not support Lambda
+# environment variables at all — confirmed via a real deploy failure, not
+# assumed). Must never be committed.
+cdk.context.json
+
 # Build output only. Do NOT use a bare `lib/` pattern: CDK convention puts stack
 # SOURCE in <package>/lib/, so `lib/` silently excludes real code from git.
 packages/*/dist/
