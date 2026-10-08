@@ -22,6 +22,19 @@ export const vercelRecords = {
 } as const;
 
 /**
+ * `newnotams.net`'s current records at Vercel's own nameservers
+ * (`ns1/ns2.vercel-dns.com`), read directly against them — not the same
+ * shape as `vercelRecords` above. The registrar is NameCheap, not GoDaddy
+ * (Phase 1 action plan §0); only the DNS *hosting* is at Vercel. Both apex
+ * and `www` are dual-IP `A` records here, not a single IP plus a `www`
+ * CNAME the way `josephkan.ca` was.
+ */
+export const newnotamsVercelRecords = {
+  apexIpv4: ["64.29.17.1", "64.29.17.65"],
+  wwwIpv4: ["64.29.17.1", "216.198.79.65"],
+} as const;
+
+/**
  * SSM parameter paths are the contract between platform and application
  * stacks (ADR-0004). Applications read these via StringParameter.valueFromLookup.
  *

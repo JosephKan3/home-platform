@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist"
+  },
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "test/**/*.ts"],
+  "exclude": ["cdk.out", "dist"],
+  "references": [{ "path": "../../packages/config" }, { "path": "../../packages/constructs" }],
+  "ts-node": {
+    "preferTsExts": true,
+    "experimentalResolver": true
+  }
+}

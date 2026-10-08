@@ -69,6 +69,34 @@ export interface ScheduledJobProps {
   /** Path to the handler source. Bundled with esbuild; must export `handler`. */
   readonly entry: string;
 
+  /**
+   * The directory `NodejsFunction` treats as the project root for dependency
+   * resolution and lockfile lookup.
+   *
+   * `NodejsFunction` defaults to walking up from `entry` to find a lockfile
+   * and requires `entry` to live under that directory
+   * (`PathNotUnderRoot` otherwise). That default assumes the handler lives
+   * inside this monorepo. A job whose `entry` lives in a separate, checked-
+   * out-at-deploy-time application repo (the `personal-website`/
+   * `NewNotams.Net` pattern — see ADR-0004) needs this set explicitly to
+   * that repo's own root, or synth fails outright before bundling is even
+   * attempted. Omit it for a job whose entry is already inside this
+   * monorepo.
+   */
+  readonly projectRoot?: string;
+
+  /**
+   * Path to the lockfile `NodejsFunction` resolves dependency versions
+   * against.
+   *
+   * Like `projectRoot`, this must live under `projectRoot` or synth fails
+   * with `PathNotUnderRoot`. Defaults to this monorepo's own lockfile,
+   * which is correct for a job whose `entry` is inside this monorepo and
+   * wrong otherwise — a job in a separate application repo needs this set
+   * to that repo's own lockfile.
+   */
+  readonly depsLockFilePath?: string;
+
   /** How often the job runs. */
   readonly schedule: ScheduledJobSchedule;
 
@@ -133,6 +161,8 @@ export class ScheduledJob extends Construct {
 
     this.fn = new NodejsFunction(this, "Function", {
       entry: props.entry,
+      projectRoot: props.projectRoot,
+      depsLockFilePath: props.depsLockFilePath,
       handler: "handler",
       runtime: SCHEDULED_JOB_RUNTIME,
       // ~20% cheaper per GB-second, and a bundled Node handler has no native
