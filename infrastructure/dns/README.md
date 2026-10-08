@@ -274,6 +274,16 @@ is a five-minute record change, not a 24–48h registry propagation.
 
 # Operational runbook — `newnotams.net` (Phase 1 action plan §4, Stage D)
 
+> **This section describes the ORIGINAL plan. It was attempted 2026-10-08, found wrong, and
+> rolled back before touching NameCheap.** `newnotams.net` turned out to have no fixed A
+> records to replicate — it is delegated to Vercel's own nameservers, which serve it from a
+> rotating anycast pool, not a stable value. The `vercel`/`cloudfront` two-state model this
+> section (and `DnsStack`'s `productOrigin` prop) assumes does not fit this domain's real
+> shape. **Do not follow D1 below as written until Phase 1 action plan §4's "before retrying
+> D1" decisions are made** — see that section for the full finding, including the CAA records
+> that independently block ACM validation and the apex-redirects-to-`www` behavior this
+> design does not account for.
+
 Same mechanism as Stage D/G above, same reasons, different domain. Differences worth stating
 up front, not rediscovering mid-migration:
 

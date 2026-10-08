@@ -47,22 +47,48 @@ roadmap assumed. Same discipline here, done up front instead of mid-execution:
   of their env vars exist in the real Vercel project — they are inert dead code, not
   configured providers. Only Google OAuth is live. Migrate the 9 real secrets; do not invent
   credentials for providers nobody configured.
-- **`newnotams.net` is not at GoDaddy.** WHOIS confirms registrar **NameCheap**
+- **`newnotams.net` is not at GoDaddy, and — this is the important part — it has no fixed
+  A records to replicate at all.** WHOIS confirms registrar **NameCheap**
   (registered 2026-06-04, `clientTransferProhibited` already set), with nameservers
-  currently `ns1/ns2.vercel-dns.com` — the domain was pointed at Vercel's own DNS, not a
-  registrar-default resolver. ADR-0006's replicate → verify → delegate → cutover sequence
-  for `josephkan.ca` still applies unchanged; the only difference is *which* nameservers get
-  replaced at the registrar (NameCheap, not GoDaddy) and *which* nameservers are being
-  replicated away from (Vercel's, not GoDaddy's own). The real records, read directly against
-  `ns1.vercel-dns.com`:
-  ```
-  newnotams.net       A     64.29.17.1, 64.29.17.65      (dual-IP, Vercel's newer anycast — not the single 76.76.21.21 the personal site used)
-  www.newnotams.net   A     64.29.17.1, 216.198.79.65    (A, not CNAME — different from the personal site's www pattern)
-  ```
-  No TXT, no MX — confirmed via direct query, matching `applications.md`'s claim that
-  nothing is at risk during migration. **Do not reuse `vercelRecords` from
-  `packages/config/src/domains.ts`** — those are `josephkan.ca`'s values. Add a parallel
-  constant for `newnotams.net` with the values above.
+  currently `ns1/ns2.vercel-dns.com`. That is the whole story: the domain is delegated to
+  **Vercel's own nameservers**, which is a materially different setup from `josephkan.ca`'s
+  (a GoDaddy-hosted zone with a plain `A` record pointing at a fixed Vercel IP). Confirmed
+  directly from the Vercel dashboard (Project → Settings → Domains → `newnotams.net`):
+  **"Current DNS Records" shows no A records at all** — only three `CAA` records
+  (`pki.goog`, `sectigo.com`, `letsencrypt.org`). Querying the zone directly
+  (`ns1.vercel-dns.com`) repeatedly returns a *rotating* 4-IP pool
+  (`64.29.17.1`, `64.29.17.65`, `216.198.79.1`, `216.198.79.65`), 2 at a time, for *both*
+  apex and `www` — not two fixed, distinct IP pairs. This is Vercel's anycast network
+  (confirmed against Vercel's own docs, `vercel.com/kb/guide/a-record-and-caa-with-vercel`):
+  "the correct value for your project is whatever your domain card shows... drawn from a
+  pool of anycast IPs," and with nameserver delegation there is no fixed A record published
+  at all — Vercel's edge handles routing dynamically.
+  **A first attempt at D1 (replicating a 2-IP snapshot per record, captured in one read
+  each) was deployed, discovered wrong via a second, more thorough read, and rolled back
+  before any registrar change** — see the Phase 1 session log for 2026-10-08. The snapshot
+  was not a complete or stable answer; replicating it would not have been a no-op.
+  Two more things the dashboard check surfaced that also change the plan:
+  - **The apex redirects to `www.newnotams.net`** — `www` is the real canonical URL today,
+    not the apex. `DnsStack`/`NewNotamsStack`'s current design treats both as equally
+    canonical ALIAS targets; this needs a decision (replicate the redirect via CloudFront
+    behavior or a redirect function, or treat it as acceptable differences since Phase 1's
+    exit criteria don't mention redirect behavior specifically).
+  - **Three `CAA` records restrict certificate issuance** to `pki.goog`, `sectigo.com`,
+    `letsencrypt.org`. ACM is not in that list. **`DnsStack`'s product-zone certificate
+    cannot validate without an ACM-permitting CAA record in the replicated zone** — this
+    would have blocked D5 even if D1's records had been correct. Add
+    `0 issue "amazonaws.com"` (or whatever ACM's current documented CAA value is — verify,
+    do not assume) as a CAA record in the replicated zone before attempting the certificate
+    again.
+  There is also a second, unrelated domain connected to the same Vercel team —
+  **`new-notams.net`** (hyphenated) — visible in the dashboard's redirect/cert list. Out of
+  scope for this migration; noted so it is not confused with `newnotams.net` later.
+  No TXT, no MX beyond the three CAA records — confirmed via direct query.
+  **`newnotamsVercelRecords` in `packages/config/src/domains.ts` (added for the first D1
+  attempt) is suspect and must be re-verified or replaced before any further DNS work** —
+  see above. Whatever replaces it should document that it is a point-in-time sample of a
+  rotating anycast pool, not a stable value, and the migration approach itself (replicate
+  fixed records vs. some other mechanism) needs to be decided before retrying Stage D.
 - **`@opennextjs/aws` has a real version floor to clear.** The app pins `"next": "16.1.6"`.
   `@opennextjs/aws` v4.1.6 (2026-09-28) bumped its *minimum* supported Next.js to `16.3.6` —
   below that floor is untested, not just unsupported-in-theory. Either bump the app's Next.js
@@ -320,35 +346,57 @@ Not yet started — this is Stage D below.
 
 ## 4. Stage D — DNS migration, `newnotams.net`
 
-Same sequence as ADR-0006 and Phase 0's step 8, substituting NameCheap for GoDaddy and
-Vercel's nameservers for GoDaddy's:
+**Status 2026-10-08: attempted, found genuinely wrong, rolled back before any registrar
+change. Blocked on a real design decision — see below — before retrying.**
 
-1. **D1 — Replicate.** Create the Route53 public hosted zone for `newnotams.net`. Populate it
-   with the *current* Vercel records, read in §0: apex `A` → `64.29.17.1`, `64.29.17.65`;
-   `www` `A` → `64.29.17.1`, `216.198.79.65`. Deploy with the equivalent of
-   `-c origin=vercel` (DNS stack targeting the existing hosting, not yet CloudFront).
-2. **D2 — Verify against Route53 directly.** `Resolve-DnsName newnotams.net -Server
-   <ns-xxx.awsdns-xx.*>` before touching anything at NameCheap.
-3. **D3 — Switch nameservers at NameCheap** from `ns1/ns2.vercel-dns.com` to the four Route53
-   nameservers. Confirm **auto-renew** is on and **transfer lock** stays on (WHOIS already
-   shows `clientTransferProhibited` — verify this is NameCheap's own lock, not something that
-   needs re-enabling after a nameserver change) while in the NameCheap dashboard, same as
-   Phase 0's GoDaddy check. This step is a no-op for the live site — zone contents are
-   identical on both sides — but confirm propagation before proceeding regardless
-   (`.net` is a gTLD; propagation is typically faster than `.ca`'s 24-48h, but verify rather
-   than assume).
-4. **D4 — Wait, verify everywhere.**
-5. **D5 — Cut over.** Once `OpenNextSite`'s CloudFront distribution is deployed and verified
-   independently (its own `dxxxx.cloudfront.net` URL, before any DNS points at it — same
-   discipline as Phase 0 step 12's CloudFront-first verification), replace both A records with
-   ALIASes to the distribution. **Expect the same CNAME/A coexistence failure Phase 0 hit at
-   this exact step** (`docs/open-issues.md`-adjacent: see `infrastructure/dns/README.md`'s
-   "Known failure mode" note, added after Phase 0's real incident). Both of `newnotams.net`'s
-   records are already type `A` here (not a CNAME like the personal site's `www` was), so this
-   specific failure mode may not even apply — **A replaced by A/ALIAS has no such conflict,
-   only a CNAME-to-A/ALIAS transition does.** Confirm this reasoning against the actual `cdk
-   diff` output before deploying; don't assume safety, verify it the way Phase 0's apex cutover
-   should have been verified the first time.
+`josephkan.ca`'s migration (Phase 0 step 8) assumed a GoDaddy-hosted zone with fixed records
+to replicate. `newnotams.net` is delegated to **Vercel's own nameservers**
+(`ns1/ns2.vercel-dns.com`), which is not the same shape at all: Vercel's dashboard shows no
+A records for this domain (only three `CAA` records), and direct queries against the zone
+return a *rotating* pool of (at least) 4 IPs for both apex and `www`, 2 at a time — Vercel's
+anycast network, confirmed against Vercel's own documentation
+(`vercel.com/kb/guide/a-record-and-caa-with-vercel`: "the correct value for your project is
+whatever your domain card shows... drawn from a pool of anycast IPs"). There is no fixed
+value to snapshot and replicate the way `josephkan.ca`'s single `76.76.21.21` was. §0 has the
+full finding, including the apex-redirects-to-`www` behavior and the CAA records that would
+have separately blocked ACM validation even if the record content had been right.
+
+**What actually happened:** D1 was attempted with a 2-IP snapshot per record (one read each),
+deployed to a real `createProductZone=true` stack update. A second, more thorough check (10
+repeated queries, then the Vercel dashboard itself) found the snapshot incomplete and the
+whole replicate-fixed-records premise wrong for this domain. The update was still
+`UPDATE_IN_PROGRESS` (blocked on the certificate, which was also doomed by the CAA records)
+and was cancelled via `aws cloudformation cancel-update-stack`. The rollback itself hit a
+real, separate CDK/ACM gap: the certificate's own DNS-validation CNAME records are not
+tracked as CloudFormation resources, so deleting the certificate did not delete them, and
+Route53 refused to delete the now-non-empty hosted zone
+(`HostedZoneNotEmptyException`) until those two CNAMEs were removed by hand via
+`aws route53 change-resource-record-sets`. Full rollback confirmed clean:
+`DnsStack` back to `UPDATE_ROLLBACK_COMPLETE`, no product zone, no stray SSM parameter,
+`josephkan.ca` untouched throughout.
+
+**Before retrying D1, decide:**
+- Whether "replicate records" is even the right migration shape for a Vercel-nameserver-
+  delegated domain with no fixed A record, versus something else (e.g., is a short-lived
+  coexistence acceptable, given Vercel's anycast network will keep answering correctly for
+  `newnotams.net` the whole time Route53 is *not yet* authoritative — meaning D1-D4 may not
+  need any replicated A/AAAA records at all, only the zone, the CAA record, and the
+  certificate, with the actual cutover (D5) being the only point real records are ever
+  written).
+- The ACM-permitting CAA record's exact value (verify against ACM's current documentation,
+  do not assume `0 issue "amazonaws.com"` is current/correct).
+- How to handle the apex-redirects-to-`www` behavior `NewNotamsStack`'s current ALIAS-on-both
+  design does not replicate.
+
+Once decided, the sequence remains structurally D1 (zone + whatever is correct to populate)
+→ D2 (verify) → D3 (switch nameservers at NameCheap, confirming auto-renew and that
+`clientTransferProhibited` survives the change) → D4 (wait, verify everywhere — `.net`
+propagation is typically faster than `.ca`'s 24-48h, but verify rather than assume) → D5
+(cut over to CloudFront once `OpenNextSite`'s distribution is independently verified,
+same discipline as Phase 0 step 12). D5's own cutover is still expected to be unaffected by
+the Phase 0 CNAME/A coexistence failure, since `newnotams.net`'s eventual replicated records
+would be type `A` (not a CNAME) — confirm against the real `cdk diff` output when that step
+is reached, don't assume safety from reasoning alone twice in a row.
 
 ---
 
