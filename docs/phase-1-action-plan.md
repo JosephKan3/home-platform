@@ -222,12 +222,24 @@ construct actually produces the resources it claims (CloudFront distribution, S3
 
 ## 3. Stage C — NewNotams' own stack
 
-`applications/newnotams/` in this monorepo. CDK only — the app source stays in
-`NewNotams.Net`, checked out at deploy time (§0, last bullet).
+**Done 2026-10-08.** `applications/newnotams/` in this monorepo. CDK only — the app source
+stays in `NewNotams.Net`, checked out at deploy time (§0, last bullet).
 
-### C1. Seed the SSM parameters
+### C1. Seed the SSM parameters — done
 
-The 9 real secrets from `vercel env ls` (§0), as `SecureString`:
+All 8 parameters live (the 9th, `CRON_SECRET`, was never migrated — see below). Two of the
+9 real secrets from `vercel env ls` turned out not to be retrievable at all: `vercel env pull`
+returned empty strings for `AUTH_GOOGLE_ID`/`AUTH_GOOGLE_SECRET`/the three `VAPID_*` values
+across every environment (dev, preview, production) — Vercel's "Sensitive" flag blocks a
+value from ever being read back via API/CLI after creation, by design, even for the project
+owner. Resolved by regenerating both: a fresh VAPID keypair (`npx web-push
+generate-vapid-keys`, free, instant) and a second Google OAuth client secret on the *same*
+existing Google OAuth client (Google supports multiple simultaneously-valid secrets per
+client — the live Vercel deployment's existing secret kept working throughout, no
+production impact). `AUTH_SECRET` and the two `KV_REST_API_*` values pulled cleanly from the
+`development` scope and were reused as-is.
+
+The 9 real secrets, as `SecureString`:
 
 ```powershell
 aws ssm put-parameter --name "/newnotams/auth/google-id" --type SecureString --value "<...>" --profile platform
@@ -249,47 +261,48 @@ Run these commands yourself, exactly as Phase 0's `QUICKSTART.md` step 11 did �
 touch chat, verified afterward only by `aws ssm get-parameter --query Parameter.{Type,Version}`
 (never decrypting).
 
-### C2. The stack
+### C2. The stack — done
 
-```ts
-// applications/newnotams/lib/newnotams-stack.ts
-export class NewNotamsStack extends Stack {
-  constructor(scope: Construct, id: string, props: NewNotamsStackProps) {
-    super(scope, id, props);
-    const profile = profileFor(props.envName);
+`NewNotamsStack` wires `OpenNextSite` for the app and `ScheduledJob` for the notify sweep,
+closely matching the sketch this section originally had, with one structural difference the
+sketch didn't anticipate: **the notify Lambda's handler lives in the app repo
+(`lambda/notify/index.ts`), not inlined here**, and imports `lib/notify.ts`/`lib/push.ts` via
+relative paths rather than the app's own `@/` tsconfig alias — esbuild (what
+`NodejsFunction`/`ScheduledJob` bundles with) does not resolve tsconfig path aliases, and
+growing `ScheduledJob` a tsconfig-passthrough option for one caller was rejected in favor of
+just not needing one.
 
-    this.site = new OpenNextSite(this, "Site", {
-      domainNames: [domains.product, `www.${domains.product}`],
-      certificate: ssm.StringParameter.valueForStringParameter(
-        this, ssmPaths.certificateArn(domains.product),
-      ),
-      profile,
-      openNextOutputPath: props.openNextOutputPath,
-    });
+The notification-building logic extraction this section called for is done: `lib/notify.ts`
+(new, in the app repo) now holds `buildNotification`, `extractNotamSummary`,
+`getSchedulesDueAt`, `ScheduleConfig` — moved verbatim out of
+`app/api/notify/route.ts`/`app/api/schedule/route.ts`. The old `GET /api/notify` cron path
+(bearer-token-checked against `CRON_SECRET`) is deleted entirely; `POST` (the user-triggered
+"send test notification now" button) is unchanged and still public.
 
-    // Grants the construct deliberately doesn't own:
-    this.site.serverFunction.role?.attachInlinePolicy(/* SSM read for the 7 params above */);
+Two real gaps surfaced here and were fixed in `ScheduledJob` itself, not worked around locally
+— this was the first `ScheduledJob` consumer whose entry lives in a different repo than this
+monorepo, and `NodejsFunction` has two separate checks that assume otherwise:
 
-    this.notifyJob = new ScheduledJob(this, "Notify", {
-      entry: /* a thin handler reusing lib/push.ts + lib/kv.ts logic from the app repo,
-                checked out alongside the site build */,
-      schedule: Duration.hours(1),
-      profile,
-      description: "Hourly NOTAM notification sweep — direct invoke, no public endpoint.",
-    });
-    this.notifyJob.role.addToPolicy(/* SSM read for kv + vapid params */);
-  }
-}
-```
+- `entry` must live under `projectRoot`, which defaults to this monorepo's own lockfile
+  directory (`PathNotUnderRoot` otherwise). Added `ScheduledJobProps.projectRoot`.
+- `depsLockFilePath` must *also* live under `projectRoot` — same failure, one layer deeper,
+  since the app repo's lockfile is its own `package-lock.json` (npm), not this monorepo's
+  `pnpm-lock.yaml`. Added `ScheduledJobProps.depsLockFilePath`.
 
-The notify job's handler needs `lib/push.ts`, `lib/kv.ts`, and the notification-building logic
-currently inline in `app/api/notify/route.ts`'s `buildNotification`/`extractNotamSummary`/etc.
-Extracting that into a shared module the Lambda handler and the (now POST-only) API route both
-import is real refactoring work in the **app repo**, not the CDK stack — do it there, as its
-own PR, before wiring the Lambda. Do not duplicate the notification-building logic between the
-route handler and the Lambda handler; that is exactly the kind of drift that makes a "weather
-brief silently stops arriving" incident (roadmap's own stated reason this app matters) harder
-to debug.
+Both are optional, defaulting to `undefined` (unchanged behavior for the one other
+`ScheduledJob` consumer, `personal-site`'s `oanda-fetcher` — confirmed by re-running its full
+test suite, 59 tests, after the change, not assumed from the props being optional).
+
+`ScheduledJob.entry` has no placeholder-source concept of its own the way `OpenNextSite` does
+— it always tries to resolve a real file. `NewNotamsStack` supplies the equivalent at the call
+site: a trivial `lib/placeholder-notify-handler.ts` inside this monorepo, used only when
+`usePlaceholderSource` is true, so CI synth never needs the app repo checked out at all.
+
+Verified three ways: 14 unit tests (least-privilege SSM scoping — the server function and the
+notify job get non-overlapping grants, since the notify sweep never touches Auth.js's
+secrets — plus zero unsuppressed cdk-nag findings), a synth with no app checkout at all (CI's
+real condition), and a synth against `NewNotams.Net`'s actual `npx open-next build` output and
+real `lambda/notify/index.ts` — clean, no path errors, no credentials warnings.
 
 ### C3. ACM certificate and DNS
 
@@ -300,6 +313,8 @@ together in practice. Given they're operationally independent (ADR-0006: "separa
 it can be spun out cleanly"), a second, parallel stack
 (`infrastructure/dns/lib/newnotams-dns-stack.ts`) is more consistent with that stated goal than
 folding it into the existing one.
+
+Not yet started — this is Stage D below.
 
 ---
 
