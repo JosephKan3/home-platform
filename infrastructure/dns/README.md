@@ -344,6 +344,32 @@ The zone is created holding **only** an ACM-permitting CAA record — no apex, n
 certificate is created `PENDING_VALIDATION` and the deploy does **not** block on it, by
 design. Add its validation CNAMEs to Vercel's zone:
 
+> ### Adding the `www` validation record takes `www.newnotams.net` down
+>
+> This caused a real ~4-minute outage on 2026-10-08. Vercel serves `www` via the wildcard
+> `* ALIAS cname.vercel-dns-017.com.` record, and DNS wildcard rules say `*` does not match
+> a name with *any* record beneath it. Creating `_<token>.www` creates a `www` label, which
+> shadows the wildcard and makes `www.newnotams.net` return NXDOMAIN. The apex is
+> unaffected — it has its own explicit ALIAS, not the wildcard.
+>
+> **Have the removal command ready before you add the record**, add it, confirm the
+> certificate reaches `ISSUED`, then delete it immediately:
+>
+> ```powershell
+> npx vercel dns ls newnotams.net --scope <team>     # get the record id
+> echo y | npx vercel dns rm <rec_id> --scope <team>
+> ```
+>
+> The certificate stays valid after the record is removed — ACM only needs it present at
+> issuance and renewal, and reuses the same validation token across attempts (confirmed:
+> a second attempt produced byte-identical validation names to the first).
+>
+> Note `--yes` is not a valid flag on `vercel dns rm`; pipe `y` to it instead. And note
+> that resolvers cache the NXDOMAIN for the zone's SOA minimum TTL (600s here), so a
+> resolver that saw the broken state keeps serving it after the fix — public resolvers
+> (Google, Cloudflare) recover immediately, but your own machine may not. `Clear-DnsClientCache`
+> does not help if the negative answer is cached upstream at your ISP.
+
 ```powershell
 aws acm describe-certificate --certificate-arn <ProductCertificateArn output> `
   --region us-east-1 --profile platform `

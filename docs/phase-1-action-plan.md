@@ -455,6 +455,43 @@ wildcard**, so only an `issue` tag is needed, not `issuewild`.
    using the `Name`/`Value` from the certificate's `DomainValidationOptions`. The certificate
    validates against Vercel's authoritative answer and reaches `ISSUED` while Vercel is still
    serving the site.
+
+   > **Adding the `www` validation record to Vercel's zone takes
+   > `www.newnotams.net` down. This happened — a real ~4-minute outage on
+   > 2026-10-08.** Vercel serves `www` via the wildcard `* ALIAS
+   > cname.vercel-dns-017.com.` record, and DNS wildcard rules say `*` does not match a
+   > name that has *any* record beneath it. Creating
+   > `_ab6d0885e3c4130c21bcedcd1eabb99d.www` therefore created a `www` label in the zone,
+   > which shadowed the wildcard and made `www.newnotams.net` return NXDOMAIN. The apex
+   > was unaffected (it has its own explicit ALIAS, not the wildcard).
+   >
+   > Mitigations, in order of preference:
+   > - **Validate the apex only, and rely on CAA inheritance.** ACM needs one validation
+   >   record per name on the certificate, so this is not possible with
+   >   `newnotams.net` + `www.newnotams.net` both as SANs. (A wildcard
+   >   `*.newnotams.net` SAN would share the apex's validation token, per ACM's docs —
+   >   worth considering if the certificate is ever reissued.)
+   > - **Add the `www` record, confirm `ISSUED`, then delete it immediately.** This is what
+   >   was done. The certificate retains validity after the record is removed (ACM only
+   >   needs it present at issuance and for renewal, and ACM reuses the same token — the
+   >   second attempt produced byte-identical validation names to the first). Total
+   >   exposure is however long issuance takes, which was under a minute of actual
+   >   validation plus the time to notice. **Have the `vercel dns rm <record-id>` command
+   >   ready before adding the record.**
+   >
+   > **Open item this leaves:** ACM auto-renewal re-checks the validation records, so the
+   > `www` one must exist again at renewal time (certificate expires 2027-04-23). After D4
+   > this is a non-issue — Route53 is authoritative by then and `DnsStack` writes an
+   > explicit `www` ALIAS, so there is no wildcard left to shadow and the validation record
+   > can live in Route53 permanently. **If the cutover has not happened before renewal
+   > comes due, the `www` validation record has to be re-added at Vercel and removed again,
+   > with the same brief outage.** `RenewalEligibility` currently reads `INELIGIBLE`, which
+   > is expected for a certificate not yet attached to anything; re-check it after D3
+   > attaches it to CloudFront.
+   > - Note that negative (NXDOMAIN) answers get cached by resolvers for the zone's SOA
+   >   minimum TTL — 600s here. Recovery at public resolvers (Google, Cloudflare) was
+   >   immediate once the record was deleted, but a resolver that cached the NXDOMAIN
+   >   during the window keeps serving it until that expires.
 3. **D3 — Deploy and verify `NewNotamsStack` end to end on CloudFront's own URL.** Sign-in,
    saved searches, a real push notification — not just a 200 on `/`. Nothing in DNS has
    changed at this point; the live site is untouched and Vercel is still serving it.
