@@ -274,95 +274,101 @@ is a five-minute record change, not a 24–48h registry propagation.
 
 # Operational runbook — `newnotams.net` (Phase 1 action plan §4, Stage D)
 
-> **This section describes the ORIGINAL plan. It was attempted 2026-10-08, found wrong, and
-> rolled back before touching NameCheap.** `newnotams.net` turned out to have no fixed A
-> records to replicate — it is delegated to Vercel's own nameservers, which serve it from a
-> rotating anycast pool, not a stable value. The `vercel`/`cloudfront` two-state model this
-> section (and `DnsStack`'s `productOrigin` prop) assumes does not fit this domain's real
-> shape. **Do not follow D1 below as written until Phase 1 action plan §4's "before retrying
-> D1" decisions are made** — see that section for the full finding, including the CAA records
-> that independently block ACM validation and the apex-redirects-to-`www` behavior this
-> design does not account for.
+**This domain does not migrate the way `josephkan.ca` did, and the difference is not
+cosmetic.** `josephkan.ca` was a GoDaddy-hosted zone with a plain `A` record at a fixed
+Vercel IP, so it could be replicated byte-for-byte into Route53 and delegated as a no-op.
+`newnotams.net` is delegated to **Vercel's own nameservers**, and its real zone contents —
+`vercel dns ls newnotams.net --scope <team>`, the only view that actually shows this — are:
 
-Same mechanism as Stage D/G above, same reasons, different domain. Differences worth stating
-up front, not rediscovering mid-migration:
+```
+CAA      0 issue "pki.goog"                      (default)
+CAA      0 issue "sectigo.com"                   (default)
+CAA      0 issue "letsencrypt.org"               (default)
+*        ALIAS  cname.vercel-dns-017.com.        (default)
+@        ALIAS  55ac134bd5db1713.vercel-dns-017.com   (default)
+```
 
-- **Registrar is NameCheap, not GoDaddy.** DNS hosting today is at Vercel's own nameservers
-  (`ns1/ns2.vercel-dns.com`), not a registrar default resolver — confirmed via `vercel domains
-  ls` (`Registrar: Third Party`) and WHOIS (`clientTransferProhibited` already set).
-- **Both records are already type `A`**, not a CNAME — `www.newnotams.net` is a dual-IP `A`
-  record, unlike `josephkan.ca`'s `www`, which was a CNAME. The CNAME/A coexistence failure
-  documented above for G1 (`RRSet of type A ... conflicting RRSet of type CNAME`) applies only
-  to a CNAME-to-ALIAS transition. An A-to-ALIAS transition has no such conflict. This has not
-  been operationally re-verified — it is a reading of Route53's documented constraint, the
-  same confidence level the original G1 incident should have had and didn't.
-- **Context values are `productOrigin`/`productCloudFrontDomainName`**, not
-  `origin`/`cloudFrontDomainName` — the two domains cut over independently, on separate
-  schedules, and sharing one context value would couple them.
+No A records at all. Every IP visible by querying a resolver is Vercel flattening those
+`ALIAS`es at request time, which is why repeated queries return a rotating pool and why no
+stable value is copyable. A first attempt replicating a 2-IP snapshot was deployed, found
+wrong, and rolled back — see the Phase 1 action plan §4 for the full account.
 
-### D1 (product) — Create and replicate
+Three consequences that shape the sequence below:
+
+- **The zone holds no apex/`www` records until the cutover.** The registry still delegates
+  `newnotams.net` to `ns1/ns2.vercel-dns.com`, so nothing queries the Route53 zone until the
+  nameserver switch. Its contents are irrelevant to live traffic until the instant they
+  become authoritative — at which point they point at CloudFront, never at Vercel.
+- **ACM is blocked by the inherited CAA records** (`pki.goog`, `sectigo.com`,
+  `letsencrypt.org` — no Amazon CA). ACM accepts any of `amazon.com`, `amazontrust.com`,
+  `awstrust.com`, `amazonaws.com`.
+- **The certificate must validate before the cutover, which means validating against
+  Vercel's zone, not Route53's.** `DnsStack` uses `acm.CertificateValidation.fromDns()` with
+  no hosted zone for the product certificate, precisely so CloudFormation does not sit for
+  72h waiting on a CNAME in a zone the world cannot resolve from. The validation CNAME goes
+  into Vercel's zone via `vercel dns add`.
+
+**There is no apex→`www` redirect on AWS.** Today's `308` is a Vercel dashboard feature, not
+application code (no `middleware.ts`, no `redirects` in `next.config.mjs`). Both hostnames
+become CloudFront aliases serving content directly. Deliberate, accepted behavior change.
+
+Registrar is **NameCheap** — confirmed via `vercel domains ls` (`Registrar: Third Party`)
+and WHOIS (`clientTransferProhibited` already set). Context values are
+`productOrigin`/`productCloudFrontDomainName`, not `origin`/`cloudFrontDomainName`: the two
+domains cut over independently, and sharing one context value would couple them.
+
+### D1 — Unblock ACM at Vercel
+
+Vercel is authoritative today, so this takes effect immediately:
+
+```powershell
+npx vercel dns add newnotams.net '@' CAA '0 issue "amazon.com"' --scope <team>
+```
+
+Verify before continuing. PowerShell's `Resolve-DnsName` and `nslookup` both refuse CAA
+queries, so use a DoH resolver:
+
+```powershell
+curl.exe -s "https://dns.google/resolve?name=newnotams.net&type=CAA"
+```
+
+`amazon.com` must appear alongside the three existing entries.
+
+### D2 — Create the zone and certificate
 
 ```powershell
 npx cdk deploy DnsStack --profile platform -c createProductZone=true
 ```
 
-Defaults to `productOrigin=vercel`: the zone is created holding records identical to Vercel's.
-Record the outputs `ProductZoneId` and `ProductZoneNameServers`.
-
-### D2 (product) — Verify against Route53, before delegating
-
-```powershell
-$ns = (aws route53 get-hosted-zone --id <PRODUCT_ZONE_ID> --profile platform | ConvertFrom-Json).DelegationSet.NameServers
-
-Resolve-DnsName newnotams.net     -Server $ns[0]
-Resolve-DnsName www.newnotams.net -Server $ns[0]
-```
-
-Expected: both return the two IPs in `newnotamsVercelRecords` (`@platform/config`) — currently
-`64.29.17.1`/`64.29.17.65` for the apex, `64.29.17.1`/`216.198.79.65` for `www`. Compare
-against what Vercel currently serves:
+The zone is created holding **only** an ACM-permitting CAA record — no apex, no `www`. The
+certificate is created `PENDING_VALIDATION` and the deploy does **not** block on it, by
+design. Add its validation CNAMEs to Vercel's zone:
 
 ```powershell
-Resolve-DnsName newnotams.net     -Server ns1.vercel-dns.com
-Resolve-DnsName www.newnotams.net -Server ns1.vercel-dns.com
+aws acm describe-certificate --certificate-arn <ProductCertificateArn output> `
+  --region us-east-1 --profile platform `
+  --query "Certificate.DomainValidationOptions[].ResourceRecord"
+
+npx vercel dns add newnotams.net '<Name, minus the trailing .newnotams.net.>' CNAME '<Value>' --scope <team>
 ```
 
-If they disagree, **stop.** Fix `newnotamsVercelRecords` and redeploy before going further.
-
-### D3 (product) — Switch nameservers at NameCheap
-
-Only once D2 passes. Replace `ns1/ns2.vercel-dns.com` with the four Route53 nameservers from
-D1. No-op: zone contents are identical.
-
-While in the NameCheap dashboard, confirm **auto-renew is on** and that
-`clientTransferProhibited` (already set, per WHOIS) survives the nameserver change.
-
-### D4 (product) — Wait and verify
-
-`.net` is a gTLD; propagation is typically faster than `.ca`'s 24–48h, but verify rather than
-assume (Phase 1 action plan §0 flags this explicitly as unconfirmed timing).
+Then confirm `ISSUED` before anything tries to attach it:
 
 ```powershell
-Resolve-DnsName newnotams.net -Type NS
-# must return awsdns servers, not vercel-dns.com
-
-Resolve-DnsName newnotams.net
-Resolve-DnsName www.newnotams.net
-# still the Vercel values — nothing has moved yet
+aws acm describe-certificate --certificate-arn <arn> --region us-east-1 --profile platform `
+  --query "Certificate.Status"
 ```
 
-### D5 (product) — Certificate, then the apex cutover
+### D3 — Deploy and verify `NewNotamsStack` on CloudFront's own URL
 
-The ACM certificate is already in this stack (created alongside the zone when
-`createProductZone=true`) and validates automatically once Route53 holds the zone:
+Nothing in DNS has changed yet; Vercel is still serving the live site. Verify properly —
+sign-in, saved searches, and a real push notification, not just a `200` on `/`. **This
+verification bar is deliberately higher than Phase 0's**, because of the rollback cost below.
 
-```powershell
-aws ssm get-parameter --name /platform/acm/newnotams.net/certificate-arn --profile platform
-```
+### D4 — The cutover
 
-Once `ISSUED` and `NewNotamsStack`'s distribution is deployed and verified independently on
-its own `dxxxx.cloudfront.net` URL (sign-in, saved searches, push notifications — not just a
-200 on `/`), cut over:
+Records first, then nameservers. That ordering means the zone is already correct at the
+instant it becomes authoritative, with no window where it is authoritative but empty:
 
 ```powershell
 npx cdk deploy DnsStack --profile platform `
@@ -371,14 +377,38 @@ npx cdk deploy DnsStack --profile platform `
   -c productCloudFrontDomainName=dxxxx.cloudfront.net
 ```
 
-Review the `cdk diff` first — it should show exactly two records changing, both A-to-ALIAS,
-nothing else. Given both are already type `A` (not a CNAME), the known G1 failure mode above
-should not reproduce here, but confirm the diff rather than assume it.
+Review the `cdk diff`: it should add exactly two ALIAS records and change nothing else. The
+Phase 0 CNAME/A coexistence failure above does not apply — this zone has no pre-existing
+record at either name — but confirm against the diff rather than assuming.
+
+Then switch nameservers at NameCheap from `ns1/ns2.vercel-dns.com` to the four from the
+`ProductZoneNameServers` output. While there, confirm **auto-renew is on** and that
+`clientTransferProhibited` survives the change.
+
+### D5 — Verify, then wait
+
+`.net` is a gTLD and propagates faster than `.ca`'s 24–48h, but verify rather than assume.
+Check from a second network (phone on cellular).
+
+```powershell
+Resolve-DnsName newnotams.net -Type NS     # must return awsdns, not vercel-dns
+curl.exe -I https://newnotams.net
+curl.exe -I https://www.newnotams.net
+```
+
+### Rollback is 6 hours here, not 5 minutes
+
+Switching nameservers back at NameCheap is the only rollback, and the registry NS TTL is
+**21600s** (confirmed). `josephkan.ca`'s five-minute record-TTL rollback does not apply,
+because this migration has no intermediate state where Route53 is authoritative while still
+pointing at Vercel. That is the deliberate trade for not replicating an undocumented anycast
+pool, and it is why D3's verification bar is higher — the cutover is to something already
+proven rather than something hoped-for.
 
 **Remove the Vercel project only after a full real hourly notify cycle has been observed
 succeeding in production on AWS** (Phase 1 action plan Stage G) — stricter than the personal
 site's 24h-clean-operation bar, since this app has a real cron job with real users receiving
-push notifications, not just a static page.
+push notifications, not just a static page. Vercel must stay up for rollback to be possible.
 
 ---
 

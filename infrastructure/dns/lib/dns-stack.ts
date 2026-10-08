@@ -25,7 +25,6 @@ import {
   DEFAULT_OWNER,
   applyPlatformTags,
   domains,
-  newnotamsVercelRecords,
   ssmPaths,
   vercelRecords,
 } from "@platform/config";
@@ -51,6 +50,20 @@ export type OriginMode = "vercel" | "cloudfront";
  * Do not raise it.
  */
 const RECORD_TTL = Duration.minutes(5);
+
+/**
+ * CA domain names ACM issues under. Any one of these in an `issue` CAA record
+ * is sufficient; ACM's documentation lists all four as equivalent
+ * (`docs.aws.amazon.com/acm/latest/userguide/setup.html`, verified — not
+ * assumed). All four are published so a future ACM change of issuing CA does
+ * not silently break renewal.
+ *
+ * Only `issue`, not `issuewild`: the product certificate covers
+ * `newnotams.net` and `www.newnotams.net` as explicit names, with no wildcard.
+ * (The platform zone's certificate IS a wildcard, but `josephkan.ca` has no
+ * CAA records at all, so nothing there restricts ACM.)
+ */
+const ACM_CAA_VALUES = ["amazon.com", "amazontrust.com", "awstrust.com", "amazonaws.com"];
 
 export interface DnsStackProps extends StackProps {
   /**
@@ -187,18 +200,43 @@ export class DnsStack extends Stack {
         comment: `${domains.product} — product domain (ADR-0006). Origin mode: ${productOrigin}.`,
       });
 
-      if (productOrigin === "vercel") {
-        this.addProductVercelRecords();
-      } else {
+      // The CAA record exists in both modes: pre-cutover it is the only
+      // record in the zone, and post-cutover it is what lets ACM renew once
+      // Route53 is authoritative. See addProductPreCutoverRecords.
+      this.addProductPreCutoverRecords();
+
+      if (productOrigin === "cloudfront") {
         this.addProductCloudFrontRecords(this.requireProductCloudFrontDomainName(props));
       }
 
       this.publishZoneParameters("ProductZone", domains.product, this.productZone);
 
+      // `fromDns()` with NO hosted zone argument, deliberately — not
+      // `fromDns(this.productZone)`.
+      //
+      // Passing the zone makes CDK write the validation CNAME into Route53,
+      // which cannot validate before the cutover: the registry still
+      // delegates `newnotams.net` to Vercel, so nothing resolves anything
+      // from this zone yet. CloudFormation would then sit in
+      // `CREATE_IN_PROGRESS` for up to 72h waiting on a record the world
+      // cannot see — which is exactly what happened on the first attempt
+      // (Phase 1 action plan §4).
+      //
+      // ACM's own documentation is explicit that the validation CNAME is a
+      // plain record to be added at whichever provider is authoritative, so
+      // it goes into Vercel's zone via `vercel dns add` while Vercel still
+      // serves the domain. The certificate reaches ISSUED before any
+      // nameserver change, which is what lets CloudFront be fully verified
+      // before the cutover rather than after it.
+      //
+      // Consequence to be aware of: this deploy will NOT block on
+      // validation, so the stack completes with the certificate still
+      // PENDING_VALIDATION. Add the CNAME, then confirm ISSUED out of band
+      // before deploying anything that attaches it.
       this.productCertificate = new acm.Certificate(this, "ProductCertificate", {
         domainName: domains.product,
         subjectAlternativeNames: [`www.${domains.product}`],
-        validation: acm.CertificateValidation.fromDns(this.productZone),
+        validation: acm.CertificateValidation.fromDns(),
       });
       new ssm.StringParameter(this, "ProductCertificateArnParameter", {
         parameterName: ssmPaths.certificateArn(domains.product),
@@ -206,10 +244,17 @@ export class DnsStack extends Stack {
         description: `ACM certificate for ${domains.product} and www.${domains.product}.`,
       });
 
+      new CfnOutput(this, "ProductCertificateArn", {
+        value: this.productCertificate.certificateArn,
+        description:
+          "Read its DomainValidationOptions with `aws acm describe-certificate` and add the " +
+          "CNAMEs to Vercel's zone with `vercel dns add` (action plan §4, D2).",
+      });
       new CfnOutput(this, "ProductZoneNameServers", {
         value: Fn.join(",", this.productZone.hostedZoneNameServers ?? []),
         description:
-          "Set these four as the nameservers at NameCheap — but only after D2 verification passes.",
+          "Set these four as the nameservers at NameCheap — but only at the D4 cutover, " +
+          "after CloudFront is verified on its own URL.",
       });
       new CfnOutput(this, "ProductOriginMode", {
         value: productOrigin,
@@ -306,26 +351,44 @@ export class DnsStack extends Stack {
   }
 
   /**
-   * `newnotams.net`'s current records, read directly against
-   * `ns1/ns2.vercel-dns.com` (Phase 1 action plan §0) — both apex and `www`
-   * are dual-IP `A` records here, not the single-IP-plus-CNAME shape
-   * `josephkan.ca` used. Replicated so the NameCheap nameserver switch
-   * (D3) is a no-op, same discipline as `addVercelRecords`.
+   * Pre-cutover state for `newnotams.net`: **no apex or `www` records at all.**
+   *
+   * This is deliberately NOT the mirror of `addVercelRecords` above, because
+   * `newnotams.net` is not the same shape as `josephkan.ca` was.
+   * `vercel dns ls newnotams.net` shows its real zone contents are `ALIAS`
+   * records to Vercel hostnames (`55ac134bd5db1713.vercel-dns-017.com`,
+   * `cname.vercel-dns-017.com`), not A records — every IP visible by querying
+   * a resolver is Vercel flattening those ALIASes at request time, which is
+   * why repeated queries return a rotating pool and why no stable value is
+   * copyable. A first attempt replicating a 2-IP snapshot was deployed, found
+   * wrong, and rolled back (Phase 1 action plan §4).
+   *
+   * Nothing queries this zone until the NameCheap nameserver switch — the
+   * registry still delegates `newnotams.net` to `ns1/ns2.vercel-dns.com`, so
+   * the zone's contents are irrelevant to live traffic until the instant they
+   * become authoritative. Records are therefore written only at the cutover
+   * (`productOrigin=cloudfront`), and the records written then point at
+   * CloudFront, never at Vercel.
+   *
+   * The CAA record is the exception, and the reason this method is not empty:
+   * it must exist in the zone before the cutover so ACM can still issue
+   * renewals once Route53 is authoritative. (For the *initial* issuance, the
+   * equivalent CAA record and the validation CNAME both go in Vercel's zone
+   * via `vercel dns add`, since Vercel is authoritative at that point — see
+   * the action plan's D1/D2.)
    */
-  private addProductVercelRecords(): void {
-    new route53.ARecord(this, "ProductApexVercelRecord", {
+  private addProductPreCutoverRecords(): void {
+    new route53.CaaRecord(this, "ProductAcmCaaRecord", {
       zone: this.productZone!,
-      target: route53.RecordTarget.fromIpAddresses(...newnotamsVercelRecords.apexIpv4),
+      values: ACM_CAA_VALUES.map((value) => ({
+        flag: 0,
+        tag: route53.CaaTag.ISSUE,
+        value,
+      })),
       ttl: RECORD_TTL,
-      comment: "Vercel apex. Replicated so delegation from NameCheap is a no-op.",
-    });
-
-    new route53.ARecord(this, "ProductWwwVercelRecord", {
-      zone: this.productZone!,
-      recordName: "www",
-      target: route53.RecordTarget.fromIpAddresses(...newnotamsVercelRecords.wwwIpv4),
-      ttl: RECORD_TTL,
-      comment: "Vercel www. Replicated so delegation from NameCheap is a no-op.",
+      comment:
+        "Permits ACM to issue for this domain. Without it ACM is blocked by the " +
+        "pki.goog/sectigo.com/letsencrypt.org CAA records this zone inherits.",
     });
   }
 

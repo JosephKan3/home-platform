@@ -17,13 +17,7 @@ process.env["PLATFORM_ACCOUNT_ID"] ??= "222222222222";
 
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
-import {
-  CLOUDFRONT_CERT_REGION,
-  domains,
-  newnotamsVercelRecords,
-  ssmPaths,
-  vercelRecords,
-} from "@platform/config";
+import { CLOUDFRONT_CERT_REGION, domains, ssmPaths, vercelRecords } from "@platform/config";
 import { DnsStack } from "../lib/dns-stack.js";
 import type { DnsStackProps } from "../lib/dns-stack.js";
 
@@ -237,18 +231,21 @@ describe("optional zones", () => {
     );
   });
 
-  test("when enabled, defaults to vercel mode with the real current Vercel records (Phase 1 §0)", () => {
+  test("pre-cutover, the product zone holds NO apex or www records — only CAA", () => {
+    // The whole point of the revised Stage D design (Phase 1 action plan §4):
+    // nothing queries this zone until the nameserver switch, and
+    // newnotams.net has no fixed records to replicate anyway (its real zone
+    // is ALIASes to Vercel hostnames). Writing Vercel-pointing records here
+    // would mean an authoritative zone pointing at another provider's
+    // internal infrastructure, for a window in which nothing reads it.
     const on = synth({ createProductZone: true });
     on.hasResourceProperties("AWS::Route53::HostedZone", { Name: `${domains.product}.` });
     on.hasOutput("ProductOriginMode", { Value: "vercel" });
 
-    const apex = recordSets(on, `${domains.product}.`, "A");
-    expect(apex).toHaveLength(1);
-    expect(apex[0]!["ResourceRecords"]).toEqual(newnotamsVercelRecords.apexIpv4);
-
-    const www = recordSets(on, `www.${domains.product}.`, "A");
-    expect(www).toHaveLength(1);
-    expect(www[0]!["ResourceRecords"]).toEqual(newnotamsVercelRecords.wwwIpv4);
+    expect(recordSets(on, `${domains.product}.`, "A")).toHaveLength(0);
+    expect(recordSets(on, `www.${domains.product}.`, "A")).toHaveLength(0);
+    expect(recordSets(on, `${domains.product}.`, "AAAA")).toHaveLength(0);
+    expect(recordSets(on, `www.${domains.product}.`, "CNAME")).toHaveLength(0);
 
     on.hasResourceProperties("AWS::SSM::Parameter", {
       Name: ssmPaths.hostedZoneId(domains.product),
@@ -256,6 +253,50 @@ describe("optional zones", () => {
     on.hasResourceProperties("AWS::SSM::Parameter", {
       Name: ssmPaths.certificateArn(domains.product),
     });
+  });
+
+  test("the product zone permits ACM to issue, or the certificate can never renew", () => {
+    // newnotams.net inherits CAA records restricting issuance to pki.goog,
+    // sectigo.com and letsencrypt.org. Without an ACM-permitting CAA record
+    // in this zone, ACM renewal fails once Route53 is authoritative — and on
+    // the first attempt, initial issuance failed for exactly this reason.
+    for (const mode of ["vercel", "cloudfront"] as const) {
+      const on = synth({
+        createProductZone: true,
+        productOrigin: mode,
+        productCloudFrontDomainName: CLOUDFRONT_DOMAIN,
+      });
+      const caa = recordSets(on, `${domains.product}.`, "CAA");
+      expect(caa).toHaveLength(1);
+      const rendered = JSON.stringify(caa[0]!["ResourceRecords"]);
+      // Any one of ACM's four CA domains is sufficient; all four are
+      // published so a future ACM CA change does not break renewal.
+      expect(rendered).toContain('0 issue \\"amazon.com\\"');
+      expect(rendered).toContain('0 issue \\"amazonaws.com\\"');
+      // issuewild is deliberately absent: this certificate covers two
+      // explicit names, no wildcard.
+      expect(rendered).not.toContain("issuewild");
+    }
+  });
+
+  test("the product certificate does not bind its validation records to Route53", () => {
+    // acm.CertificateValidation.fromDns() with no hosted zone. Passing the
+    // zone would make CloudFormation wait up to 72h on a validation CNAME in
+    // a zone the world does not yet resolve from — the exact failure the
+    // first attempt hit. The CNAME is added to Vercel's zone instead, while
+    // Vercel is still authoritative.
+    const on = synth({ createProductZone: true });
+    const certs = Object.entries(on.findResources("AWS::CertificateManager::Certificate")).filter(
+      ([logicalId]) => logicalId.startsWith("ProductCertificate"),
+    );
+    expect(certs).toHaveLength(1);
+
+    const properties = (certs[0]![1] as { Properties: Record<string, unknown> }).Properties;
+    expect(properties["ValidationMethod"]).toBe("DNS");
+    // DomainValidationOptions carries HostedZoneId only when CDK is managing
+    // the records itself.
+    const options = JSON.stringify(properties["DomainValidationOptions"] ?? []);
+    expect(options).not.toContain("HostedZoneId");
   });
 
   test("productOrigin=cloudfront renders ALIAS records, not CNAME, at the product apex", () => {

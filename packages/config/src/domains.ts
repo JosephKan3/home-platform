@@ -22,17 +22,21 @@ export const vercelRecords = {
 } as const;
 
 /**
- * `newnotams.net`'s current records at Vercel's own nameservers
- * (`ns1/ns2.vercel-dns.com`), read directly against them — not the same
- * shape as `vercelRecords` above. The registrar is NameCheap, not GoDaddy
- * (Phase 1 action plan §0); only the DNS *hosting* is at Vercel. Both apex
- * and `www` are dual-IP `A` records here, not a single IP plus a `www`
- * CNAME the way `josephkan.ca` was.
+ * There is deliberately no `newnotamsVercelRecords` constant.
+ *
+ * An earlier attempt added one, holding a 2-IP snapshot per record, on the
+ * assumption `newnotams.net` could be replicated the way `josephkan.ca` was.
+ * It could not: `vercel dns ls newnotams.net` shows its real zone contents
+ * are `ALIAS` records to Vercel hostnames, not A records, and every IP
+ * visible by querying a resolver is Vercel flattening those ALIASes at
+ * request time — a rotating pool, not a stable value. Replicating it was
+ * deployed, found wrong, and rolled back (Phase 1 action plan §4).
+ *
+ * The migration writes no pre-cutover apex/`www` records at all. Nothing
+ * queries the Route53 zone until the nameserver switch, and the records
+ * written at that point target CloudFront, never Vercel. See `DnsStack`'s
+ * `addProductPreCutoverRecords`.
  */
-export const newnotamsVercelRecords = {
-  apexIpv4: ["64.29.17.1", "64.29.17.65"],
-  wwwIpv4: ["64.29.17.1", "216.198.79.65"],
-} as const;
 
 /**
  * SSM parameter paths are the contract between platform and application
