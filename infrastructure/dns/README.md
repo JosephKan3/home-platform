@@ -34,9 +34,14 @@ the migration of hosting are therefore two independent, independently revertible
   publishing either without a mail provider behind it would be worse than publishing nothing.
 - ACM certificate for `josephkan.ca` + `*.josephkan.ca`, DNS-validated against the zone.
   Must live in `us-east-1`; the stack refuses to synthesize anywhere else.
-- Public hosted zone for `newnotams.net`, **off by default** (`-c createProductZone=true`),
-  created with no records. Phase 1 replicates its records and delegates, same order as
-  Stage D here.
+- Public hosted zone for `newnotams.net`, **off by default** (`-c createProductZone=true`).
+  Once on, populated the same way as the platform zone above, gated by its own `productOrigin`
+  context value (defaults to `vercel`) and its own ACM certificate — the two domains cut over
+  independently (ADR-0006: "separate identity so it can be spun out cleanly"). `vercel` mode
+  replicates `newnotams.net`'s real current records, read directly against
+  `ns1/ns2.vercel-dns.com` (Phase 1 action plan §0) — dual-IP `A` records for both apex and
+  `www`, not the single-IP-plus-CNAME shape `josephkan.ca` used. `cloudfront` mode needs
+  `-c productCloudFrontDomainName=dxxxx.cloudfront.net` (`NewNotamsStack`'s distribution).
 - Private hosted zone for `internal.josephkan.ca`, **off by default**. See below.
 - SSM parameters that are the contract with application stacks.
 
@@ -264,6 +269,108 @@ Or revert the `cdk.json` change and let CI redeploy.
 
 This is the entire reason D3 and G1 are separate events: a problem with the AWS deployment
 is a five-minute record change, not a 24–48h registry propagation.
+
+---
+
+# Operational runbook — `newnotams.net` (Phase 1 action plan §4, Stage D)
+
+Same mechanism as Stage D/G above, same reasons, different domain. Differences worth stating
+up front, not rediscovering mid-migration:
+
+- **Registrar is NameCheap, not GoDaddy.** DNS hosting today is at Vercel's own nameservers
+  (`ns1/ns2.vercel-dns.com`), not a registrar default resolver — confirmed via `vercel domains
+  ls` (`Registrar: Third Party`) and WHOIS (`clientTransferProhibited` already set).
+- **Both records are already type `A`**, not a CNAME — `www.newnotams.net` is a dual-IP `A`
+  record, unlike `josephkan.ca`'s `www`, which was a CNAME. The CNAME/A coexistence failure
+  documented above for G1 (`RRSet of type A ... conflicting RRSet of type CNAME`) applies only
+  to a CNAME-to-ALIAS transition. An A-to-ALIAS transition has no such conflict. This has not
+  been operationally re-verified — it is a reading of Route53's documented constraint, the
+  same confidence level the original G1 incident should have had and didn't.
+- **Context values are `productOrigin`/`productCloudFrontDomainName`**, not
+  `origin`/`cloudFrontDomainName` — the two domains cut over independently, on separate
+  schedules, and sharing one context value would couple them.
+
+### D1 (product) — Create and replicate
+
+```powershell
+npx cdk deploy DnsStack --profile platform -c createProductZone=true
+```
+
+Defaults to `productOrigin=vercel`: the zone is created holding records identical to Vercel's.
+Record the outputs `ProductZoneId` and `ProductZoneNameServers`.
+
+### D2 (product) — Verify against Route53, before delegating
+
+```powershell
+$ns = (aws route53 get-hosted-zone --id <PRODUCT_ZONE_ID> --profile platform | ConvertFrom-Json).DelegationSet.NameServers
+
+Resolve-DnsName newnotams.net     -Server $ns[0]
+Resolve-DnsName www.newnotams.net -Server $ns[0]
+```
+
+Expected: both return the two IPs in `newnotamsVercelRecords` (`@platform/config`) — currently
+`64.29.17.1`/`64.29.17.65` for the apex, `64.29.17.1`/`216.198.79.65` for `www`. Compare
+against what Vercel currently serves:
+
+```powershell
+Resolve-DnsName newnotams.net     -Server ns1.vercel-dns.com
+Resolve-DnsName www.newnotams.net -Server ns1.vercel-dns.com
+```
+
+If they disagree, **stop.** Fix `newnotamsVercelRecords` and redeploy before going further.
+
+### D3 (product) — Switch nameservers at NameCheap
+
+Only once D2 passes. Replace `ns1/ns2.vercel-dns.com` with the four Route53 nameservers from
+D1. No-op: zone contents are identical.
+
+While in the NameCheap dashboard, confirm **auto-renew is on** and that
+`clientTransferProhibited` (already set, per WHOIS) survives the nameserver change.
+
+### D4 (product) — Wait and verify
+
+`.net` is a gTLD; propagation is typically faster than `.ca`'s 24–48h, but verify rather than
+assume (Phase 1 action plan §0 flags this explicitly as unconfirmed timing).
+
+```powershell
+Resolve-DnsName newnotams.net -Type NS
+# must return awsdns servers, not vercel-dns.com
+
+Resolve-DnsName newnotams.net
+Resolve-DnsName www.newnotams.net
+# still the Vercel values — nothing has moved yet
+```
+
+### D5 (product) — Certificate, then the apex cutover
+
+The ACM certificate is already in this stack (created alongside the zone when
+`createProductZone=true`) and validates automatically once Route53 holds the zone:
+
+```powershell
+aws ssm get-parameter --name /platform/acm/newnotams.net/certificate-arn --profile platform
+```
+
+Once `ISSUED` and `NewNotamsStack`'s distribution is deployed and verified independently on
+its own `dxxxx.cloudfront.net` URL (sign-in, saved searches, push notifications — not just a
+200 on `/`), cut over:
+
+```powershell
+npx cdk deploy DnsStack --profile platform `
+  -c createProductZone=true `
+  -c productOrigin=cloudfront `
+  -c productCloudFrontDomainName=dxxxx.cloudfront.net
+```
+
+Review the `cdk diff` first — it should show exactly two records changing, both A-to-ALIAS,
+nothing else. Given both are already type `A` (not a CNAME), the known G1 failure mode above
+should not reproduce here, but confirm the diff rather than assume it.
+
+**Remove the Vercel project only after a full real hourly notify cycle has been observed
+succeeding in production on AWS** (Phase 1 action plan Stage G) — stricter than the personal
+site's 24h-clean-operation bar, since this app has a real cron job with real users receiving
+push notifications, not just a static page.
+
+---
 
 ## Local commands
 

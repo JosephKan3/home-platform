@@ -17,7 +17,13 @@ process.env["PLATFORM_ACCOUNT_ID"] ??= "222222222222";
 
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
-import { CLOUDFRONT_CERT_REGION, domains, ssmPaths, vercelRecords } from "@platform/config";
+import {
+  CLOUDFRONT_CERT_REGION,
+  domains,
+  newnotamsVercelRecords,
+  ssmPaths,
+  vercelRecords,
+} from "@platform/config";
 import { DnsStack } from "../lib/dns-stack.js";
 import type { DnsStackProps } from "../lib/dns-stack.js";
 
@@ -220,22 +226,74 @@ describe("SSM contract with application stacks", () => {
 });
 
 describe("optional zones", () => {
-  test("the product zone is off by default and empty when enabled", () => {
+  test("the product zone is off by default", () => {
     const off = synth();
     expect(JSON.stringify(off.findResources("AWS::Route53::HostedZone"))).not.toContain(
       domains.product,
     );
+    // No ProductCertificate either — the whole feature is gated on createProductZone.
+    expect(JSON.stringify(off.findResources("AWS::CertificateManager::Certificate"))).not.toContain(
+      "ProductCertificate",
+    );
+  });
 
+  test("when enabled, defaults to vercel mode with the real current Vercel records (Phase 1 §0)", () => {
     const on = synth({ createProductZone: true });
     on.hasResourceProperties("AWS::Route53::HostedZone", { Name: `${domains.product}.` });
-    // No records: newnotams.net still resolves through its current provider
-    // until Phase 1 replicates them.
-    for (const record of allRecordSets(on)) {
-      expect(String(record["Name"])).not.toContain(domains.product);
-    }
+    on.hasOutput("ProductOriginMode", { Value: "vercel" });
+
+    const apex = recordSets(on, `${domains.product}.`, "A");
+    expect(apex).toHaveLength(1);
+    expect(apex[0]!["ResourceRecords"]).toEqual(newnotamsVercelRecords.apexIpv4);
+
+    const www = recordSets(on, `www.${domains.product}.`, "A");
+    expect(www).toHaveLength(1);
+    expect(www[0]!["ResourceRecords"]).toEqual(newnotamsVercelRecords.wwwIpv4);
+
     on.hasResourceProperties("AWS::SSM::Parameter", {
       Name: ssmPaths.hostedZoneId(domains.product),
     });
+    on.hasResourceProperties("AWS::SSM::Parameter", {
+      Name: ssmPaths.certificateArn(domains.product),
+    });
+  });
+
+  test("productOrigin=cloudfront renders ALIAS records, not CNAME, at the product apex", () => {
+    const on = synth({
+      createProductZone: true,
+      productOrigin: "cloudfront",
+      productCloudFrontDomainName: CLOUDFRONT_DOMAIN,
+    });
+    on.hasOutput("ProductOriginMode", { Value: "cloudfront" });
+
+    const apex = recordSets(on, `${domains.product}.`, "A");
+    expect(apex).toHaveLength(1);
+    expect(apex[0]!["AliasTarget"]).toBeDefined();
+    expect(apex[0]!["ResourceRecords"]).toBeUndefined();
+
+    const www = recordSets(on, `www.${domains.product}.`, "A");
+    expect(www).toHaveLength(1);
+    expect(www[0]!["AliasTarget"]).toBeDefined();
+  });
+
+  test("productOrigin=cloudfront without productCloudFrontDomainName throws", () => {
+    expect(() => synth({ createProductZone: true, productOrigin: "cloudfront" })).toThrow(
+      /productCloudFrontDomainName/,
+    );
+  });
+
+  test("the platform and product zones cut over independently", () => {
+    // origin=cloudfront (platform) with productOrigin left at its vercel
+    // default must not also flip the product zone — the whole point of
+    // having two separate context values (ADR-0006: "separate identity so
+    // it can be spun out cleanly").
+    const on = synth({
+      createProductZone: true,
+      origin: "cloudfront",
+      cloudFrontDomainName: CLOUDFRONT_DOMAIN,
+    });
+    on.hasOutput("OriginMode", { Value: "cloudfront" });
+    on.hasOutput("ProductOriginMode", { Value: "vercel" });
   });
 
   test("the private internal zone is off by default and needs a VPC", () => {

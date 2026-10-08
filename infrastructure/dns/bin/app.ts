@@ -26,6 +26,15 @@ if (origin !== "vercel" && origin !== "cloudfront") {
   throw new Error(`Invalid origin context value: ${String(origin)}. Expected vercel or cloudfront.`);
 }
 
+// newnotams.net's own cutover, independent of the platform's (Phase 1 action
+// plan §4, Stage D). Same mechanism, different domain, different schedule.
+const productOrigin = (app.node.tryGetContext("productOrigin") as OriginMode | undefined) ?? "vercel";
+if (productOrigin !== "vercel" && productOrigin !== "cloudfront") {
+  throw new Error(
+    `Invalid productOrigin context value: ${String(productOrigin)}. Expected vercel or cloudfront.`,
+  );
+}
+
 // The hosted zone is the live apex; it is env=prod and deploys through the prod
 // bootstrap qualifier, whose CFN execution role carries no boundary.
 new DnsStack(app, "DnsStack", {
@@ -34,7 +43,16 @@ new DnsStack(app, "DnsStack", {
   description: "Route53 zones, records and the platform ACM certificate (Phase 0 §5, §8).",
   origin,
   cloudFrontDomainName: app.node.tryGetContext("cloudFrontDomainName"),
-  createProductZone: app.node.tryGetContext("createProductZone") === true,
+  // `=== true` alone never matched a CLI `-c createProductZone=true`, which
+  // arrives as the string "true" — a real, pre-Phase-1 bug, caught only now
+  // because this flag had never actually been exercised. Accepts both the
+  // boolean (set programmatically, e.g. from a test) and the string (set via
+  // -c on the command line).
+  createProductZone:
+    app.node.tryGetContext("createProductZone") === true ||
+    app.node.tryGetContext("createProductZone") === "true",
+  productOrigin,
+  productCloudFrontDomainName: app.node.tryGetContext("productCloudFrontDomainName"),
   internalZoneVpcId: app.node.tryGetContext("internalZoneVpcId"),
 });
 

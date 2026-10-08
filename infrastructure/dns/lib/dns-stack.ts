@@ -25,6 +25,7 @@ import {
   DEFAULT_OWNER,
   applyPlatformTags,
   domains,
+  newnotamsVercelRecords,
   ssmPaths,
   vercelRecords,
 } from "@platform/config";
@@ -84,13 +85,35 @@ export interface DnsStackProps extends StackProps {
   readonly cloudFrontDomainName?: string;
 
   /**
-   * Create the `newnotams.net` public hosted zone. Empty of records: Phase 1
-   * replicates its Vercel records and delegates, exactly as Stage D does here.
+   * Create the `newnotams.net` public hosted zone.
    *
-   * Off by default because an empty zone costs $0.50/mo and nothing on day one
-   * consumes it.
+   * Off by default because a zone costs $0.50/mo and nothing consumes it
+   * before Phase 1. Once on, populated with records per `productOrigin` —
+   * the zone is never created empty, unlike Phase 0's original design here:
+   * an empty zone with no records is not independently useful, and
+   * `productOrigin`'s default (`vercel`) is exactly what Stage D needs to
+   * deploy first anyway (replicate before delegating).
    */
   readonly createProductZone?: boolean;
+
+  /**
+   * `newnotams.net` apex/www origin. Same meaning as `origin`, independent
+   * of it — the two domains cut over on their own schedules (ADR-0006:
+   * "separate identity so it can be spun out cleanly"). Defaults to
+   * `vercel`: the live state, read directly against
+   * `ns1/ns2.vercel-dns.com` (Phase 1 action plan §0), not GoDaddy — the
+   * registrar is NameCheap, but DNS hosting is at Vercel today.
+   */
+  readonly productOrigin?: OriginMode;
+
+  /**
+   * CloudFront distribution domain name for `newnotams.net`
+   * (`NewNotamsStack`'s `OpenNextSite`). Required when `productOrigin` is
+   * `cloudfront`. Same reasoning as `cloudFrontDomainName` — passed
+   * explicitly, never via a CloudFormation export, across the ADR-0004
+   * seam.
+   */
+  readonly productCloudFrontDomainName?: string;
 
   /**
    * VPC ID to associate the `internal.josephkan.ca` private hosted zone with.
@@ -107,6 +130,7 @@ export class DnsStack extends Stack {
   readonly productZone?: route53.PublicHostedZone;
   readonly internalZone?: route53.PrivateHostedZone;
   readonly certificate: acm.Certificate;
+  readonly productCertificate?: acm.Certificate;
 
   constructor(scope: Construct, id: string, props: DnsStackProps = {}) {
     super(scope, id, props);
@@ -156,14 +180,41 @@ export class DnsStack extends Stack {
     });
 
     if (props.createProductZone) {
-      // No records: newnotams.net still resolves through its current provider.
-      // Phase 1 replicates its records here before any delegation, same order
-      // as Stage D. Creating the zone early only reserves the delegation set.
+      const productOrigin = props.productOrigin ?? "vercel";
+
       this.productZone = new route53.PublicHostedZone(this, "ProductZone", {
         zoneName: domains.product,
-        comment: `${domains.product} — records migrate in Phase 1 (ADR-0006).`,
+        comment: `${domains.product} — product domain (ADR-0006). Origin mode: ${productOrigin}.`,
       });
+
+      if (productOrigin === "vercel") {
+        this.addProductVercelRecords();
+      } else {
+        this.addProductCloudFrontRecords(this.requireProductCloudFrontDomainName(props));
+      }
+
       this.publishZoneParameters("ProductZone", domains.product, this.productZone);
+
+      this.productCertificate = new acm.Certificate(this, "ProductCertificate", {
+        domainName: domains.product,
+        subjectAlternativeNames: [`www.${domains.product}`],
+        validation: acm.CertificateValidation.fromDns(this.productZone),
+      });
+      new ssm.StringParameter(this, "ProductCertificateArnParameter", {
+        parameterName: ssmPaths.certificateArn(domains.product),
+        stringValue: this.productCertificate.certificateArn,
+        description: `ACM certificate for ${domains.product} and www.${domains.product}.`,
+      });
+
+      new CfnOutput(this, "ProductZoneNameServers", {
+        value: Fn.join(",", this.productZone.hostedZoneNameServers ?? []),
+        description:
+          "Set these four as the nameservers at NameCheap — but only after D2 verification passes.",
+      });
+      new CfnOutput(this, "ProductOriginMode", {
+        value: productOrigin,
+        description: "Where the newnotams.net apex points. Flipping to cloudfront is the D5 cutover.",
+      });
     }
 
     if (props.internalZoneVpcId) {
@@ -255,6 +306,60 @@ export class DnsStack extends Stack {
   }
 
   /**
+   * `newnotams.net`'s current records, read directly against
+   * `ns1/ns2.vercel-dns.com` (Phase 1 action plan §0) — both apex and `www`
+   * are dual-IP `A` records here, not the single-IP-plus-CNAME shape
+   * `josephkan.ca` used. Replicated so the NameCheap nameserver switch
+   * (D3) is a no-op, same discipline as `addVercelRecords`.
+   */
+  private addProductVercelRecords(): void {
+    new route53.ARecord(this, "ProductApexVercelRecord", {
+      zone: this.productZone!,
+      target: route53.RecordTarget.fromIpAddresses(...newnotamsVercelRecords.apexIpv4),
+      ttl: RECORD_TTL,
+      comment: "Vercel apex. Replicated so delegation from NameCheap is a no-op.",
+    });
+
+    new route53.ARecord(this, "ProductWwwVercelRecord", {
+      zone: this.productZone!,
+      recordName: "www",
+      target: route53.RecordTarget.fromIpAddresses(...newnotamsVercelRecords.wwwIpv4),
+      ttl: RECORD_TTL,
+      comment: "Vercel www. Replicated so delegation from NameCheap is a no-op.",
+    });
+  }
+
+  /**
+   * The `newnotams.net` apex cutover (Stage D5). Both existing records are
+   * already type `A` (not a CNAME, unlike `josephkan.ca`'s `www`), so this
+   * is an A-to-ALIAS transition on both — the CNAME/A coexistence failure
+   * that bit Phase 0's apex cutover (`infrastructure/dns/README.md`'s
+   * "Known failure mode" note) does not apply here. Confirmed by this
+   * reasoning, not re-verified operationally until D5 actually runs.
+   */
+  private addProductCloudFrontRecords(cloudFrontDomainName: string): void {
+    const target = route53.RecordTarget.fromAlias({
+      bind: () => ({
+        hostedZoneId: CloudFrontTarget.getHostedZoneId(this),
+        dnsName: cloudFrontDomainName,
+      }),
+    });
+
+    new route53.ARecord(this, "ProductApexCloudFrontRecord", {
+      zone: this.productZone!,
+      target,
+      comment: "Apex ALIAS to CloudFront. Revert to productOrigin=vercel to roll back.",
+    });
+
+    new route53.ARecord(this, "ProductWwwCloudFrontRecord", {
+      zone: this.productZone!,
+      recordName: "www",
+      target,
+      comment: "www ALIAS to the same distribution.",
+    });
+  }
+
+  /**
    * No mail is sent from this domain, which is precisely why the domain should
    * be unspoofable: `p=reject` costs nothing and closes the gap.
    *
@@ -303,6 +408,21 @@ export class DnsStack extends Stack {
           "of the personal-site distribution). Pass it as a prop or with " +
           "-c cloudFrontDomainName=dxxxx.cloudfront.net. It is not read from a " +
           "CloudFormation export, by design (ADR-0004).",
+      );
+    }
+    return value;
+  }
+
+  private requireProductCloudFrontDomainName(props: DnsStackProps): string {
+    const fromContext = this.node.tryGetContext("productCloudFrontDomainName");
+    const value =
+      props.productCloudFrontDomainName ?? (typeof fromContext === "string" ? fromContext : undefined);
+    if (!value) {
+      throw new Error(
+        "productOrigin=cloudfront requires productCloudFrontDomainName (the " +
+          "dxxxx.cloudfront.net domain of NewNotamsStack's distribution). Pass it as a " +
+          "prop or with -c productCloudFrontDomainName=dxxxx.cloudfront.net. It is not " +
+          "read from a CloudFormation export, by design (ADR-0004).",
       );
     }
     return value;
