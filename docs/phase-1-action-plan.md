@@ -495,6 +495,26 @@ wildcard**, so only an `issue` tag is needed, not `issuewild`.
 3. **D3 — Deploy and verify `NewNotamsStack` end to end on CloudFront's own URL.** Sign-in,
    saved searches, a real push notification — not just a 200 on `/`. Nothing in DNS has
    changed at this point; the live site is untouched and Vercel is still serving it.
+
+   > **This bar was stated correctly but not actually met the first time.** D3 was run,
+   > `curl`/`Invoke-WebRequest` checks against `/api/auth/providers` and the homepage passed,
+   > and that was taken as "verified." It was not: a real Google sign-in through the live
+   > website, tried only after D4's cutover and a user-reported bug ("the login dialog just
+   > closes"), uncovered two serious, independent bugs that every HTTP-level check had
+   > missed — CloudFront's OAC cannot sign a POST request that carries a body at all
+   > (`403 InvalidSignatureException` on every sign-in attempt, silent to anything short of
+   > clicking the actual button), and `StringParameter.valueFromLookup` does not decrypt
+   > `SecureString` parameters, so the Lambda's `AUTH_GOOGLE_ID` was raw KMS ciphertext, not
+   > a real client ID, from the moment it was first deployed. Both are now fixed (see
+   > `applications/newnotams/lib/newnotams-stack.ts` and
+   > `packages/constructs/src/opennext-site/opennext-site.ts` for the full account in each
+   > file's own doc comments) and a real sign-in now completes on the production domain —
+   > but this happened in production, during the window between D3 and the user noticing,
+   > not during D3 itself. **The lesson, not just the fix: "verify sign-in" has to mean
+   > clicking the actual sign-in button in a browser, not checking that the API endpoints
+   > respond.** `curl` cannot exercise CSRF-protected, cookie-dependent, or
+   > signature-sensitive request paths faithfully enough to stand in for it. Do this for real,
+   > by hand, before calling any future D3-shaped step done.
 4. **D4 — The cutover, one step.** Switch nameservers at NameCheap from
    `ns1/ns2.vercel-dns.com` to the four Route53 nameservers, *and* deploy `DnsStack` with
    `productOrigin=cloudfront` so the zone holds apex and `www` ALIASes to the distribution.
