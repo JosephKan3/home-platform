@@ -541,8 +541,9 @@ assume safety from reasoning alone twice in a row.
 
 ## 5. Stage E — Observability, the actual point of this phase
 
-The roadmap is explicit that this is the workload that makes observability matter — a
-silently-failing weather brief is a real incident. Minimum viable version:
+**Done (the minimum viable version) 2026-10-10.** The roadmap is explicit that this is the
+workload that makes observability matter — a silently-failing weather brief is a real
+incident. Minimum viable version:
 
 - **OTel instrumentation** in the OpenNext server function and the notify Lambda. Check
   `@opennextjs/aws`'s documented OTel support before hand-rolling instrumentation — this is
@@ -555,26 +556,57 @@ silently-failing weather brief is a real incident. Minimum viable version:
   target-invocation failures, or a CloudWatch Logs metric filter on the Lambda's own
   `"ok": false` / error-count counters. A missed hourly run with no alert is exactly the
   silent-failure scenario the roadmap calls out by name.
+
+  **Done.** The notify Lambda's own `lambda/notify/index.ts` already threw on a full sweep
+  failure, deliberately (see its own comment), which made the choice of metric simple:
+  `fn.metricErrors()` — Lambda's standard error count — needed no custom metric filter. A
+  CloudWatch Alarm watches it (1 error in a 1-hour period, matching `NOTIFY_INTERVAL` exactly,
+  `treatMissingData: NOT_BREACHING`), publishing to a TLS-enforced SNS topic with an email
+  subscription (`alertEmail` prop, same convention as `GovernanceStack`'s). Confirmed live:
+  the subscription was confirmed via the email link, `aws cloudwatch describe-alarms` shows
+  `OK` state. Does **not** cover "the schedule failed to invoke the Lambda at all" (a
+  different, rarer failure mode — see `createNotifyFailureAlarm`'s doc comment in
+  `applications/newnotams/lib/newnotams-stack.ts` for why that's out of scope for the minimum
+  viable version this stage asks for).
+- OTel instrumentation and CloudWatch metrics beyond the one alarm above were not done —
+  deferred, same reasoning as the next bullet.
 - **Grafana Cloud free tier** as the dashboard/alert backend, per the roadmap. Defer the full
   SLO/burn-rate-alert machinery until the basic "did it run, did it error" alarm exists and has
   been observed working for at least one real incident or near-miss — building burn-rate math
-  against zero historical data is premature.
+  against zero historical data is premature. **The basic alarm now exists** (above); the
+  dashboard/SLO layer is still deferred, correctly, per this same reasoning — no real incident
+  history exists yet to calibrate against.
 
 ---
 
 ## 6. Stage F — Clean up what Phase 0's reconnaissance already flagged
 
-From `applications.md`'s own notes, cheap to do while already touching this code:
+**Done.** From `applications.md`'s own notes, cheap to do while already touching this code:
 
 - Remove `typescript.ignoreBuildErrors: true` from `next.config.mjs`. Fix whatever it was
   hiding — do this **before** the OpenNext migration, not after, so any real type error
   surfaces against the known-working Vercel deploy rather than a new, less-familiar Lambda
   deploy path.
+
+  **Done in Stage A** (moved up, since the Next.js version bump was already touching this
+  file): fixed the two real type errors the flag was hiding (`auth.ts`'s deprecated `AzureAD`
+  import and a stale `@ts-expect-error`). See Stage A's own entry for the full account.
 - Add a CloudFront/WAF rate-based rule on `/api/weather` — it is an open, unauthenticated
   proxy to Nav Canada today, and moving it to Lambda doesn't fix that on its own.
+
+  **Done, but not as a CloudFront/WAF rule.** A full WAF web ACL was priced out at ~$5/mo
+  base plus per-rule/request charges — a large fraction of the whole phase's $8-15/mo budget,
+  to protect one route — and `NewNotamsStack`'s own `AwsSolutions-CFR2` suppression already
+  says as much. Used `@upstash/ratelimit` instead, on the same Redis instance `lib/kv.ts`
+  already connects to: no new infrastructure, no new cost. 30 requests/60s per client IP
+  (from `X-Forwarded-For`, which CloudFront always sets). Verified live: 30 requests succeed,
+  the 31st returns `429` with correct `Retry-After`/`X-RateLimit-*` headers, and the window
+  resets correctly for a real subsequent request.
 - Leave `getSchedulesDueAt`'s N+1 alone. `applications.md` correctly defers the real fix to
   the Phase 2 DynamoDB migration, where querying by notify-hour is the natural fix. Patching
   it now against Upstash would be throwaway work.
+
+  **Left alone, as planned.** No change needed here — recorded for completeness.
 
 ---
 
