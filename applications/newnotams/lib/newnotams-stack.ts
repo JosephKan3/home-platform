@@ -19,9 +19,13 @@
  */
 
 import { CfnOutput, Duration, Fn, Stack } from "aws-cdk-lib";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as snsSubscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import { DEFAULT_OWNER, applyPlatformTags, domains, profileFor, ssmPaths } from "@platform/config";
 import { OpenNextSite, ScheduledJob, suppressNagRules } from "@platform/constructs";
@@ -129,6 +133,17 @@ export interface NewNotamsStackProps extends StackProps {
 
   /** See `OpenNextSiteProps.usePlaceholderSource`. */
   readonly usePlaceholderSource?: boolean;
+
+  /**
+   * Where the notify-failure alarm (Phase 1 action plan §5) sends email.
+   *
+   * Same convention as `GovernanceStack`'s `alertEmail` prop
+   * (`josephkan3+aws-alerts@gmail.com` in practice) — optional so a test or
+   * CI synth doesn't need a real inbox, but every real deploy should set it,
+   * since an alarm with no subscriber is a missed hourly sweep nobody is
+   * ever told about.
+   */
+  readonly alertEmail?: string;
 }
 
 export class NewNotamsStack extends Stack {
@@ -137,6 +152,7 @@ export class NewNotamsStack extends Stack {
   readonly accessLogBucket: s3.Bucket;
   readonly distribution: cloudfront.Distribution;
   readonly notifyJob: ScheduledJob;
+  readonly alertTopic: sns.Topic;
 
   constructor(scope: Construct, id: string, props: NewNotamsStackProps) {
     super(scope, id, props);
@@ -172,6 +188,8 @@ export class NewNotamsStack extends Stack {
       props.usePlaceholderSource === true,
     );
     this.grantNotifyJobSecrets(this.notifyJob);
+
+    this.alertTopic = this.createNotifyFailureAlarm(this.notifyJob, props.alertEmail);
 
     applyPlatformTags(this, { app: APP_NAME, env: profile.env, owner: DEFAULT_OWNER });
 
@@ -372,6 +390,67 @@ export class NewNotamsStack extends Stack {
       newNotamsParameterNames.vapidPrivateKey,
       newNotamsParameterNames.vapidSubject,
     ]);
+  }
+
+  /**
+   * "One alarm that matters more than the rest" (Phase 1 action plan §5):
+   * the notify job's own `lambda/notify/index.ts` only throws when every
+   * user's notification failed this sweep (a partial failure is logged as
+   * a warning but does not fail the invocation, on purpose — see that
+   * file's own comment on why a retry-everyone response to a partial
+   * failure would be worse than the partial failure itself). An uncaught
+   * throw is exactly what Lambda's own `Errors` metric counts, so alarming
+   * on it directly needs no custom metric filter or EventBridge rule — the
+   * signal already exists.
+   *
+   * This does not, by itself, cover "the schedule failed to invoke the
+   * Lambda at all" (an IAM or EventBridge-side failure, not a Lambda
+   * error) — `ScheduledJob` does not expose the underlying
+   * `scheduler.CfnSchedule` to alarm on its own invocation-failure metric
+   * separately, and CDK wires the schedule's IAM permission itself, making
+   * that failure mode unlikely enough that it is out of scope for the
+   * minimum viable version this stage is asking for (Phase 1 action plan
+   * §5: "the basic... alarm", not the full SLO/burn-rate machinery).
+   *
+   * A hard-coded threshold of 1 error in a 1-hour period, matching
+   * `NOTIFY_INTERVAL` exactly: each invocation either throws (1) or does
+   * not (0), so this alarms on the very first failed sweep rather than
+   * waiting for a pattern — a missed weather brief is exactly the kind of
+   * thing the roadmap says should not fail silently even once.
+   */
+  private createNotifyFailureAlarm(job: ScheduledJob, alertEmail?: string): sns.Topic {
+    const topic = new sns.Topic(this, "AlertTopic", {
+      displayName: `${APP_NAME} alerts`,
+      // AwsSolutions-SNS3: denies Publish over plain HTTP via a topic policy
+      // condition. CloudWatch's own alarm-to-SNS publish already uses TLS;
+      // this only closes off anyone else trying to publish insecurely.
+      enforceSSL: true,
+    });
+    if (alertEmail !== undefined) {
+      topic.addSubscription(new snsSubscriptions.EmailSubscription(alertEmail));
+    }
+
+    const alarm = new cloudwatch.Alarm(this, "NotifyFailureAlarm", {
+      alarmDescription:
+        "The hourly NOTAM notify sweep failed outright (every user's notification failed) " +
+        "for at least one invocation. See lambda/notify/index.ts (app repo) for what counts " +
+        "as a full failure versus a logged partial one.",
+      metric: job.fn.metricErrors({ period: NOTIFY_INTERVAL, statistic: "Sum" }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      // A period with no invocation at all (nothing scheduled, or the
+      // schedule itself never fired) reports no datapoints, not a zero —
+      // treating that as "not breaching" is correct here: EventBridge
+      // Scheduler invokes hourly unconditionally, so a true "did not run"
+      // is a different, rarer failure mode (see this method's own doc
+      // comment) that this alarm does not claim to cover.
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    alarm.addAlarmAction(new cloudwatchActions.SnsAction(topic));
+    alarm.addOkAction(new cloudwatchActions.SnsAction(topic));
+
+    return topic;
   }
 
   /**

@@ -19,6 +19,7 @@ const app = new App();
 const usePlaceholderSource = app.node.tryGetContext("sitePlaceholder") === "true";
 const openNextOutputPath = app.node.tryGetContext("openNextOutputPath");
 const appRepoPath = app.node.tryGetContext("appRepoPath");
+const alertEmail = app.node.tryGetContext("alertEmail");
 
 // The environment name drives both the resource profile and the bootstrap
 // qualifier, so the two cannot drift — see personal-site/bin/app.ts's
@@ -33,6 +34,7 @@ new NewNotamsStack(app, "NewNotamsStack", {
   usePlaceholderSource,
   openNextOutputPath: typeof openNextOutputPath === "string" ? openNextOutputPath : undefined,
   appRepoPath: typeof appRepoPath === "string" ? appRepoPath : undefined,
+  alertEmail: typeof alertEmail === "string" ? alertEmail : undefined,
 });
 
 Aspects.of(app).add(new NoManagedEgressAspect());

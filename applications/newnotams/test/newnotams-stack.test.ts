@@ -187,6 +187,57 @@ describe("notify schedule", () => {
   });
 });
 
+describe("notify failure alarm (Phase 1 action plan §5)", () => {
+  test("alarms on the notify Lambda's own Errors metric, matching the hourly schedule", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      Namespace: "AWS/Lambda",
+      MetricName: "Errors",
+      Statistic: "Sum",
+      Period: 3600,
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      TreatMissingData: "notBreaching",
+    });
+  });
+
+  test("the alarm targets the notify function specifically, not the server function", () => {
+    const alarms = template.findResources("AWS::CloudWatch::Alarm");
+    const [, alarm] = Object.entries(alarms)[0]!;
+    const dimensions = (alarm as { Properties: { Dimensions: Array<Record<string, unknown>> } }).Properties
+      .Dimensions;
+    const functionNameDimension = dimensions.find((d) => d["Name"] === "FunctionName");
+    expect(JSON.stringify(functionNameDimension)).toContain("NotifyFunction");
+    expect(JSON.stringify(functionNameDimension)).not.toContain("ServerFunction");
+  });
+
+  test("publishes to an SNS topic that enforces TLS (AwsSolutions-SNS3)", () => {
+    template.resourceCountIs("AWS::SNS::Topic", 1);
+    template.hasResourceProperties("AWS::SNS::TopicPolicy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Effect: "Deny",
+            Condition: { Bool: { "aws:SecureTransport": "false" } },
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("subscribes the given alert email", () => {
+    const withEmail = synth({ alertEmail: "test+alerts@example.com" });
+    withEmail.hasResourceProperties("AWS::SNS::Subscription", {
+      Protocol: "email",
+      Endpoint: "test+alerts@example.com",
+    });
+  });
+
+  test("has no email subscription when alertEmail is omitted — an alarm with no subscriber is silent, but synth should not require a real inbox", () => {
+    template.resourceCountIs("AWS::SNS::Subscription", 0);
+  });
+});
+
 describe("handles for the consuming stack", () => {
   test("exposes the bucket, log bucket, distribution and notify job", () => {
     const app = new App();
@@ -199,5 +250,6 @@ describe("handles for the consuming stack", () => {
     expect(stack.accessLogBucket.bucketArn).toBeDefined();
     expect(stack.distribution.distributionDomainName).toBeDefined();
     expect(stack.notifyJob.fn.functionArn).toBeDefined();
+    expect(stack.alertTopic.topicArn).toBeDefined();
   });
 });
