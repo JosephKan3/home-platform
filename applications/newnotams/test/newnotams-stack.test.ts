@@ -225,6 +225,30 @@ describe("notify failure alarm (Phase 1 action plan §5)", () => {
     });
   });
 
+  test("explicitly allows CloudWatch to publish — regression test for a real bug", () => {
+    // enforceSSL:true creates an explicit topic policy (the Deny above);
+    // once any explicit policy exists, SNS no longer grants the implicit
+    // same-account access an otherwise-policy-free topic gets, and
+    // CfnAlarm's SnsAction never adds a grant of its own (confirmed by
+    // reading its source). Without this statement, the alarm fires
+    // correctly but nothing is ever actually published — caught live by
+    // forcing a real notify failure, watching the alarm reach ALARM, and
+    // finding zero datapoints on AWS/SNS's NumberOfMessagesPublished for
+    // this topic in that window. No email ever arrived.
+    template.hasResourceProperties("AWS::SNS::TopicPolicy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Effect: "Allow",
+            Principal: { Service: "cloudwatch.amazonaws.com" },
+            Action: "sns:Publish",
+            Condition: { StringEquals: { "aws:SourceAccount": ENV.account } },
+          }),
+        ]),
+      }),
+    });
+  });
+
   test("subscribes the given alert email", () => {
     const withEmail = synth({ alertEmail: "test+alerts@example.com" });
     withEmail.hasResourceProperties("AWS::SNS::Subscription", {

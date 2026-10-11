@@ -430,6 +430,34 @@ export class NewNotamsStack extends Stack {
       topic.addSubscription(new snsSubscriptions.EmailSubscription(alertEmail));
     }
 
+    // Without this, the alarm below silently never notifies anyone — a real
+    // bug caught by actually forcing a test failure and finding no email
+    // arrived, not by code review or cdk-nag. `enforceSSL: true` creates an
+    // explicit topic policy (the Deny-on-plain-HTTP statement above); once
+    // *any* explicit policy exists, SNS stops granting the implicit
+    // same-account access it gives an otherwise-policy-free topic, and
+    // `CfnAlarm`'s AlarmActions (wired via `SnsAction`, confirmed by reading
+    // its source: `SnsAction.bind()` only returns the topic ARN string, it
+    // never calls `grantPublish` or adds any statement of its own) has
+    // nothing granting it `sns:Publish` at all. Confirmed end to end:
+    // manually broke the notify Lambda's KV endpoint, invoked it, watched
+    // `aws cloudwatch describe-alarms` show `ALARM`, then found zero
+    // datapoints on `AWS/SNS`'s own `NumberOfMessagesPublished` metric for
+    // this topic in that window — the alarm fired, but nothing was ever
+    // actually published. Scoped to this topic and this account specifically
+    // (`aws:SourceAccount`), not every possible alarm, matching the pattern
+    // AWS's own SNS access-control docs show for CloudWatch Alarms.
+    topic.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: "AllowCloudWatchAlarmPublish",
+        effect: iam.Effect.ALLOW,
+        principals: [new iam.ServicePrincipal("cloudwatch.amazonaws.com")],
+        actions: ["sns:Publish"],
+        resources: [topic.topicArn],
+        conditions: { StringEquals: { "aws:SourceAccount": this.account } },
+      }),
+    );
+
     const alarm = new cloudwatch.Alarm(this, "NotifyFailureAlarm", {
       alarmDescription:
         "The hourly NOTAM notify sweep failed outright (every user's notification failed) " +
