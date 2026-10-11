@@ -26,3 +26,7 @@ automation/*/dist/
 
 # Editor/extension state, not project code
 .kilo/
+
+# Scratch commit-message files used to avoid PowerShell quoting issues with
+# multi-line -m strings. Accidentally committed once; never again.
+.git-commit-msg.txt
