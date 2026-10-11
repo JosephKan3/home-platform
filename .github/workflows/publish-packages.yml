@@ -1,0 +1,115 @@
+name: Publish packages
+
+# Publishes @josephkan3/config and @josephkan3/constructs to GitHub Packages
+# on every push to main that touches either package (ADR-0009).
+#
+# Each package's local version is compared against its currently-published
+# version with `npm view <pkg> version`, and `pnpm publish` only runs for a
+# package whose version actually changed.
+#
+# This check is required, not optional belt-and-suspenders: a plain
+# `pnpm publish` (or `pnpm publish -r --filter=<pkg>`, explicitly targeting
+# one package either way) against an already-published version fails hard
+# with `409 Conflict - Cannot publish over existing version`, confirmed by
+# running it for real against the live registry. `pnpm publish -r` run with
+# NO filter at all does pre-filter out already-published packages via its
+# own internal `isAlreadyPublished` check (confirmed by reading pnpm's
+# source) — but that mode publishes the *entire* workspace, which is wrong
+# here (it would also try to publish every private app package). Once a
+# package is targeted explicitly, pnpm assumes the request is deliberate and
+# lets the registry's rejection surface as a real error instead of silently
+# skipping. So every push that does not bump either package's version must
+# be a clean no-op, not a correctly-skipped publish followed by a failure
+# from trying anyway — hence the explicit version check below, run before
+# `pnpm publish` is ever invoked.
+#
+# Consumers (currently: JosephKan3/NewNotams.Net's cdk/) must bump the
+# version in packages/config/package.json or packages/constructs/package.json
+# before this workflow does anything — this workflow does not bump versions
+# itself, by design, since a version bump is a real semver decision a human
+# should make deliberately.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/config/**"
+      - "packages/constructs/**"
+  # Lets this be triggered manually to verify the version-check/skip logic
+  # without needing a real version bump pending.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  # GITHUB_TOKEN can publish to GitHub Packages for repos it already has
+  # write access to -- same-repo publishing, which this is (both packages'
+  # package.json `repository` field points at this repo) -- needs no PAT,
+  # per GitHub's own publishing-packages docs.
+  packages: write
+
+concurrency:
+  # Not cancel-in-progress: two pushes close together should both complete
+  # their publish attempts, not have the first one killed mid-publish.
+  group: publish-packages
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  MGMT_ACCOUNT_ID: ${{ vars.MGMT_ACCOUNT_ID }}
+  PLATFORM_ACCOUNT_ID: ${{ vars.PLATFORM_ACCOUNT_ID }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@josephkan3"
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # @josephkan3/constructs depends on @josephkan3/config via
+      # workspace:* -- building both before publishing means the dist/
+      # output pnpm packs is current, and pnpm rewrites workspace:* to a
+      # real version automatically at publish time (confirmed in Phase 1
+      # action plan's ADR-0009 work), resolving against whatever version
+      # config ends up at even if config's own version just changed in
+      # this same push.
+      - name: Build
+        run: pnpm run build --filter=@josephkan3/config --filter=@josephkan3/constructs
+
+      - name: Run tests before publishing
+        run: pnpm run test --filter=@josephkan3/config --filter=@josephkan3/constructs
+
+      - name: Publish @josephkan3/config if its version changed
+        working-directory: packages/config
+        run: |
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED_VERSION=$(npm view @josephkan3/config version --registry=https://npm.pkg.github.com 2>/dev/null || echo "none")
+          echo "local=$LOCAL_VERSION published=$PUBLISHED_VERSION"
+          if [ "$LOCAL_VERSION" = "$PUBLISHED_VERSION" ]; then
+            echo "Version unchanged, skipping publish."
+          else
+            pnpm publish --no-git-checks --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish @josephkan3/constructs if its version changed
+        working-directory: packages/constructs
+        run: |
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED_VERSION=$(npm view @josephkan3/constructs version --registry=https://npm.pkg.github.com 2>/dev/null || echo "none")
+          echo "local=$LOCAL_VERSION published=$PUBLISHED_VERSION"
+          if [ "$LOCAL_VERSION" = "$PUBLISHED_VERSION" ]; then
+            echo "Version unchanged, skipping publish."
+          else
+            pnpm publish --no-git-checks --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
