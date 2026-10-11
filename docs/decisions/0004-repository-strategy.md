@@ -26,11 +26,10 @@ home-platform/
 │   └── platform/            shared RDS, shared ALB, Route53, ECR, observability, Tailscale
 │
 ├── applications/            ← app-owned. Fast-changing. Deployed continuously.
-│   ├── newnotams/
-│   │   ├── infra/           its own CDK stacks — consumes platform via SSM lookup
-│   │   └── src/
-│   ├── portfolio/
-│   └── receipts/
+│   ├── personal-site/
+│   │   ├── lib/              its own CDK stack — consumes platform via SSM lookup
+│   │   └── bin/
+│   └── (newnotams/ — moved out; see below)
 │
 ├── automation/              ← the AI/ops layer (ADR-0005)
 │   ├── platform-api/        operations API; activities/ is engine-agnostic
@@ -47,6 +46,14 @@ home-platform/
 ├── docs/                    ADRs, diagrams, runbooks
 └── .github/workflows/
 ```
+
+> **`newnotams` was built here first, then moved out.** It followed this layout through
+> Phase 1, then moved into its own pre-existing repo (`JosephKan3/NewNotams.Net`, which
+> predates this monorepo entirely) once that repo's independent history was actually checked
+> against the threshold this ADR states below for splitting out of the monorepo. See
+> ADR-0009 for the full account, including how the `packages/config`/`packages/constructs`
+> dependency was resolved (published to GitHub Packages, not copied) and what stayed
+> unchanged (the guardrail Aspects still apply in the new repo, with no exception).
 
 ### The dependency rule that keeps the separation real
 
@@ -87,9 +94,9 @@ make it visible.
 
 ### Independent deployability
 
-Turborepo's affected-graph means a change under `applications/newnotams/` deploys only that
-application; `infrastructure/network/` is not synthesized or diffed. CI pipelines are split
-accordingly:
+Turborepo's affected-graph means a change under `applications/personal-site/` deploys only
+that application; `infrastructure/network/` is not synthesized or diffed. CI pipelines are
+split accordingly:
 
 - `infrastructure/**` → requires approval, deploys to prod behind a GitHub Environment.
 - `applications/**` → auto-deploys to dev, canary-deploys to prod via CodeDeploy.

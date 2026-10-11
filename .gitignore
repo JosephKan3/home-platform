@@ -30,3 +30,7 @@ automation/*/dist/
 # Scratch commit-message files used to avoid PowerShell quoting issues with
 # multi-line -m strings. Accidentally committed once; never again.
 .git-commit-msg.txt
+
+# GitHub Packages auth config (references $NODE_AUTH_TOKEN, never the literal
+# token itself -- but still machine-local, not committed, same as any .npmrc).
+.npmrc
