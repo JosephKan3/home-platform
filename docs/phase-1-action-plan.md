@@ -621,32 +621,84 @@ and deliver before calling it clean, not just "the homepage returns 200."
 
 ## 8. Exit criteria
 
-Phase 1 is done when **all** of these are true:
+Phase 1 is done when **all** of these are true. Reviewed against reality 2026-10-10/11, not
+assumed from "the stage is marked done" — several items below were previously unchecked
+despite the relevant stage being done, because "done" and "proven" turned out to be different
+things more than once this phase (the alarm existing vs. the alarm's email actually arriving
+being the sharpest example).
 
 - [ ] NewNotams serves production traffic at `newnotams.net` from Lambda + CloudFront, with
       nobody touching the console for a routine deploy (same CI discipline as Phase 0's
       `deploy-dev`/`deploy-prod`, extended to this stack).
-- [ ] The hourly notify job runs via direct EventBridge → Lambda invocation. `/api/notify`'s
+
+      **Not met.** `NewNotamsStack` is not wired into `.github/workflows/deploy.yml` at all —
+      confirmed by grep, zero matches. Every deploy this entire phase was a manual
+      `cdk deploy` from a local machine. The site serves production traffic correctly; the "no
+      console, no manual step" part of this criterion is simply not built yet.
+- [x] The hourly notify job runs via direct EventBridge → Lambda invocation. `/api/notify`'s
       GET cron path and `CRON_SECRET` are gone; POST (user-triggered test send) still works
       from the browser.
-- [ ] `Resolve-DnsName newnotams.net -Type NS` returns AWS nameservers.
+
+      Confirmed: the GET handler and `CRON_SECRET` were removed in Stage C; `ScheduledJob`
+      invokes the Lambda directly (confirmed via the forced-failure test above, which invoked
+      it directly with `aws lambda invoke` the same way EventBridge does); POST was not
+      re-verified in this specific session but was confirmed working earlier in Stage D3's
+      sign-in investigation (the "send test notification" button exercises the same route).
+- [x] `Resolve-DnsName newnotams.net -Type NS` returns AWS nameservers.
+
+      Confirmed: all four `awsdns-*` nameservers.
 - [ ] `https://newnotams.net` serves from CloudFront with a valid ACM cert; sign-in
       (Google OAuth + credentials), saved searches, and push notifications all work
       end-to-end against the AWS deployment.
-- [ ] No VPC exists. No NAT Gateway exists. (`NoManagedEgressAspect` covers this
+
+      **Partially met.** CloudFront + ACM cert: confirmed. Google OAuth sign-in: confirmed
+      live, end to end, after fixing two real bugs along the way (see Stage D3's retrospective
+      note above). **Credentials sign-in, saved searches, and push notifications have not
+      been verified on the AWS deployment** — not attempted this session. Do not check this
+      item until they are; Google OAuth alone is not "sign-in... works," given how much this
+      phase's own experience shows that one working path does not imply the others do.
+- [x] No VPC exists. No NAT Gateway exists. (`NoManagedEgressAspect` covers this
       automatically — no new verification needed beyond what Phase 0 already proved it does.)
+
+      Confirmed directly, not just trusted from the Aspect: `aws ec2 describe-vpcs` shows only
+      the account's pre-existing default VPC (not something this phase created), and
+      `aws ec2 describe-nat-gateways` returns empty.
 - [ ] Vercel is off for the product, only after a full real hourly notify cycle has been
       observed succeeding in production on AWS.
-- [ ] At least one alarm exists for "the hourly notify job did not run or errored," and it has
+
+      **Not met, deliberately** — owner's call: "leave Vercel, no harm in it having it." Same
+      decision as the personal site in Phase 0. Not a blocker for anything else; recorded as
+      an accepted, permanent exception to this criterion rather than a pending task.
+- [x] At least one alarm exists for "the hourly notify job did not run or errored," and it has
       been proven to fire (same "prove the alert actually fires" discipline as Phase 0's
       budget-alert exit criterion — don't take a configured-but-unverified alarm on faith).
-- [ ] `typescript.ignoreBuildErrors` is removed from the app's `next.config.mjs` and the build
+
+      Confirmed the hard way: the alarm existing and being configured correctly was not
+      enough. Proving it fires found a real bug (the SNS topic policy — see Stage E's
+      findings above) where the alarm reached `ALARM` state but no email ever arrived.
+      Fixed, redeployed, and the exact same live test re-run: alarm fired, SNS's own
+      `NumberOfMessagesPublished` metric showed the publish, email confirmed received.
+- [x] `typescript.ignoreBuildErrors` is removed from the app's `next.config.mjs` and the build
       is clean without it.
-- [ ] `/api/weather` has a rate limit.
+
+      Confirmed: no match in the current file. Done in Stage A; build has been clean since.
+- [x] `/api/weather` has a rate limit.
+
+      Confirmed live: 30 requests/60s per IP via `@upstash/ratelimit`, the 31st returns `429`
+      with correct `Retry-After`/`X-RateLimit-*` headers, and the window resets correctly for
+      a real subsequent request.
 - [ ] One full billing cycle confirms the combined Phase 0 + Phase 1 bill stays under
       **$15/mo** (the revised `applications.md` ceiling, not the roadmap's stale $35).
+
+      **Not yet checkable** — Phase 1 work only started partway through October's billing
+      cycle. Month-to-date through 2026-10-11 is $1.97 (`aws ce get-cost-and-usage`), a
+      healthy trajectory, but "one full billing cycle" means waiting for October (or the next
+      complete month) to close before this can honestly be checked off.
 - [ ] A teardown runbook exists for everything built in this phase, matching Phase 0's
       `docs/runbooks/teardown-phase-0.md` pattern.
+
+      **Not met.** `docs/runbooks/teardown-phase-1.md` does not exist yet — confirmed, not
+      assumed. A real gap to close before Phase 1 is actually done, not just "mostly done."
 
 ---
 
