@@ -63,19 +63,62 @@ export interface GitHubOidcStackProps extends StackProps {
    * previously (for example by EKS or another repo) does not error.
    */
   readonly existingOidcProviderArn?: string;
+  /**
+   * Skip creating `cdk-dev-permissions-boundary` and reference the existing
+   * one instead.
+   *
+   * The boundary's `managedPolicyName` is a fixed, account-wide name
+   * (`DEV_PERMISSIONS_BOUNDARY_NAME`) by design — `cdk bootstrap
+   * --custom-permissions-boundary <name>` needs a stable, predictable name
+   * to pass on the command line, since the CLI runs before CDK could
+   * generate one. That same fixed name means a second `GitHubOidcStack`
+   * instance in the same account — e.g. a second repo's OIDC roles, see
+   * ADR-0009 — cannot also create it: IAM managed policy names are unique
+   * per account, and the create would collide with the first instance's.
+   * Set `true` for every instance after the first one in a given account.
+   * The boundary itself is correctly shared account-wide regardless of
+   * which repo's deploy role it protects — it caps `env=prod` access for
+   * the whole account's dev qualifier, not one repo's deploys specifically.
+   */
+  readonly useExistingDevPermissionsBoundary?: boolean;
+  /**
+   * Prefix for the three role names, which are otherwise hardcoded
+   * (`gha-plan`, `gha-deploy-dev`, `gha-deploy-prod`).
+   *
+   * IAM role names are unique per account, same constraint as the
+   * permissions boundary's managed policy name (see
+   * `useExistingDevPermissionsBoundary`). A second `GitHubOidcStack`
+   * instance in the same account with the default prefix fails deploy
+   * outright — confirmed directly: `Resource of type 'AWS::IAM::Role' with
+   * identifier 'gha-plan' already exists` — not a theoretical risk.
+   * Defaults to `"gha"`, preserving the exact existing names
+   * (`home-platform`'s own instance must keep these exact names: they are
+   * captured as GitHub repository variables, `AWS_PLAN_ROLE_ARN` etc., by
+   * ARN rather than by name, but changing them would still mean re-running
+   * that one-time manual capture for no reason). Every instance after the
+   * first in a given account needs a distinct prefix — e.g. `"gha-newnotams"`.
+   */
+  readonly rolePrefix?: string;
 }
 
 export class GitHubOidcStack extends Stack {
   readonly planRole: iam.Role;
   readonly deployDevRole: iam.Role;
   readonly deployProdRole: iam.Role;
-  readonly devPermissionsBoundary: iam.ManagedPolicy;
+  /**
+   * `IManagedPolicy`, not the concrete `ManagedPolicy` class — when
+   * `useExistingDevPermissionsBoundary` is true, this is a reference
+   * (`fromManagedPolicyName`), which the interface type covers and the
+   * concrete class does not.
+   */
+  readonly devPermissionsBoundary: iam.IManagedPolicy;
 
   constructor(scope: Construct, id: string, props: GitHubOidcStackProps = {}) {
     super(scope, id, props);
 
     const owner = props.githubOwner ?? "JosephKan3";
     const repo = props.githubRepo ?? "home-platform";
+    const rolePrefix = props.rolePrefix ?? "gha";
     const ownerId = props.githubOwnerId ?? 54008059;
     const repoId = props.githubRepoId ?? 1366801384;
     // Immutable subject format (repos created after 2026-07-15): the `repo`
@@ -99,10 +142,16 @@ export class GitHubOidcStack extends Stack {
           // would break silently when GitHub rotates certificates.
         });
 
-    this.devPermissionsBoundary = this.createDevPermissionsBoundary();
+    this.devPermissionsBoundary = props.useExistingDevPermissionsBoundary
+      ? iam.ManagedPolicy.fromManagedPolicyName(
+          this,
+          "ExistingDevPermissionsBoundary",
+          DEV_PERMISSIONS_BOUNDARY_NAME,
+        )
+      : this.createDevPermissionsBoundary();
 
     this.planRole = new iam.Role(this, "GhaPlanRole", {
-      roleName: "gha-plan",
+      roleName: `${rolePrefix}-plan`,
       description: `Pull request plan role for ${owner}/${repo}. Read-only plus CDK lookup.`,
       assumedBy: this.githubPrincipal(provider, `${repoRef}:pull_request`),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("ReadOnlyAccess")],
@@ -138,7 +187,7 @@ export class GitHubOidcStack extends Stack {
     ]);
 
     this.deployDevRole = new iam.Role(this, "GhaDeployDevRole", {
-      roleName: "gha-deploy-dev",
+      roleName: `${rolePrefix}-deploy-dev`,
       description:
         `Dev deploy role for ${owner}/${repo}. May assume only the ` +
         `cdk-${BOOTSTRAP_QUALIFIERS.dev}-* bootstrap roles, whose CFN execution role is ` +
@@ -148,7 +197,7 @@ export class GitHubOidcStack extends Stack {
     this.grantCdkDeploy(this.deployDevRole, BOOTSTRAP_QUALIFIERS.dev);
 
     this.deployProdRole = new iam.Role(this, "GhaDeployProdRole", {
-      roleName: "gha-deploy-prod",
+      roleName: `${rolePrefix}-deploy-prod`,
       description: `Prod deploy role for ${owner}/${repo}. Gated by the GitHub prod environment.`,
       assumedBy: this.githubPrincipal(provider, `${repoRef}:environment:prod`),
     });

@@ -200,6 +200,72 @@ describe("GitHubOidcStack", () => {
     );
   });
 
+  test("rolePrefix avoids the role-name collision a second instance in the same account would otherwise hit", () => {
+    // IAM role names are unique per account, same constraint as the
+    // permissions boundary's managed policy name. Confirmed directly: a
+    // second GitHubOidcStack instance with the default prefix fails real
+    // deploy with "Resource of type 'AWS::IAM::Role' with identifier
+    // 'gha-plan' already exists" (ADR-0009's NewNotams.Net rollout hit this
+    // for real).
+    const app = new App();
+    const stack = new GitHubOidcStack(app, "PrefixedRepoStack", {
+      env: { account: "222222222222", region: "us-east-1" },
+      githubOwner: "SomeOrg",
+      githubRepo: "second-repo",
+      githubOwnerId: 111,
+      githubRepoId: 222,
+      existingOidcProviderArn:
+        "arn:aws:iam::222222222222:oidc-provider/token.actions.githubusercontent.com",
+      useExistingDevPermissionsBoundary: true,
+      rolePrefix: "gha-second-repo",
+    });
+    const template = Template.fromStack(stack);
+
+    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "gha-second-repo-plan" });
+    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "gha-second-repo-deploy-dev" });
+    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "gha-second-repo-deploy-prod" });
+    // Not left over from the default prefix.
+    expect(
+      Object.keys(template.findResources("AWS::IAM::Role", { Properties: { RoleName: "gha-plan" } })),
+    ).toHaveLength(0);
+  });
+
+  test("the default rolePrefix preserves the exact existing names (home-platform's own instance must keep them)", () => {
+    const template = synth();
+    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "gha-plan" });
+    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "gha-deploy-dev" });
+    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "gha-deploy-prod" });
+  });
+
+  test("useExistingDevPermissionsBoundary references the boundary instead of creating a second one", () => {
+    // IAM managed policy names are unique per account. DEV_PERMISSIONS_BOUNDARY_NAME
+    // is a fixed, shared name (cdk bootstrap --custom-permissions-boundary
+    // needs a predictable name), so a second GitHubOidcStack instance in the
+    // same account -- e.g. a second repo's OIDC roles, ADR-0009 -- creating
+    // its own copy would collide with the first instance's at deploy time.
+    const app = new App();
+    const stack = new GitHubOidcStack(app, "SecondRepoStack", {
+      env: { account: "222222222222", region: "us-east-1" },
+      githubOwner: "SomeOrg",
+      githubRepo: "second-repo",
+      githubOwnerId: 111,
+      githubRepoId: 222,
+      existingOidcProviderArn:
+        "arn:aws:iam::222222222222:oidc-provider/token.actions.githubusercontent.com",
+      useExistingDevPermissionsBoundary: true,
+    });
+    const template = Template.fromStack(stack);
+
+    expect(Object.keys(template.findResources("AWS::IAM::ManagedPolicy"))).toHaveLength(0);
+    expect(stack.devPermissionsBoundary.managedPolicyArn).toBeDefined();
+
+    // The dev deploy role must still reference the (existing, shared)
+    // boundary by name in its AssumeCdkBootstrapRoles-adjacent wiring --
+    // referencing it does not require creating it.
+    const policy = policyForRole(template, "GhaDeployDevRole");
+    expect(policy.Statement.length).toBeGreaterThan(0);
+  });
+
   test("uses the configured GitHub owner, repo, and their numeric IDs in every sub claim", () => {
     const app = new App();
     const stack = new GitHubOidcStack(app, "CustomRepoStack", {
