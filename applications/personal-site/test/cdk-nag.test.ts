@@ -20,7 +20,7 @@ process.env["PLATFORM_ACCOUNT_ID"] ??= "222222222222";
 import { App, Stack } from "aws-cdk-lib";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import { AwsSolutionsChecks } from "cdk-nag";
-import { CLOUDFRONT_CERT_REGION, synthesizerFor } from "@platform/config";
+import { CLOUDFRONT_CERT_REGION, synthesizerFor } from "@josephkan3/config";
 import { SiteStack } from "../lib/site-stack.js";
 import type { PolicyViolation } from "aws-cdk-lib";
 

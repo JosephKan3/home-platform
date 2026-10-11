@@ -11,7 +11,7 @@
  */
 
 import { Annotations, CfnResource, TagManager } from "aws-cdk-lib";
-import { REQUIRED_TAG_KEYS } from "@platform/config";
+import { REQUIRED_TAG_KEYS } from "@josephkan3/config";
 import type { IAspect } from "aws-cdk-lib";
 import type { IConstruct } from "constructs";
 
@@ -47,7 +47,7 @@ export class RequiredTagsAspect implements IAspect {
     Annotations.of(node).addError(
       `Missing required tag(s): ${missing.join(", ")}. ` +
         `Every taggable resource must carry ${REQUIRED_TAG_KEYS.join(", ")}. ` +
-        "Apply them with applyPlatformTags() from @platform/config.",
+        "Apply them with applyPlatformTags() from @josephkan3/config.",
     );
   }
 }

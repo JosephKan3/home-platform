@@ -18,7 +18,7 @@ export class LogRetentionAspect implements IAspect {
     Annotations.of(node).addError(
       "Log group has no explicit retentionInDays. CloudWatch defaults to " +
         '"never expire", which is the most common silent cost leak in an AWS ' +
-        "account. Set retention from the environment profile in @platform/config.",
+        "account. Set retention from the environment profile in @josephkan3/config.",
     );
   }
 }

@@ -6,7 +6,7 @@
 import { App, Stack } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { AwsSolutionsChecks } from "cdk-nag";
-import { profileFor, synthesizerFor } from "@platform/config";
+import { profileFor, synthesizerFor } from "@josephkan3/config";
 import * as path from "node:path";
 import { OpenNextSite } from "../src/index.js";
 import type { OpenNextSiteProps } from "../src/index.js";

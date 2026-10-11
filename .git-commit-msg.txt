@@ -1,0 +1,36 @@
+refactor: rename @platform/config and @platform/constructs to @josephkan3/*
+
+Per ADR-0009: NewNotamsStack is moving into NewNotams.Net's own repo, which
+means @platform/config and @platform/constructs need to be real,
+installable packages, not workspace:* monorepo-only references. GitHub
+Packages requires a scoped package's scope to match the GitHub
+account/org it is published under -- confirmed against GitHub's own docs
+("the name field should be @my-org/test" for an org named my-org) -- so
+@platform, an arbitrary string with no matching GitHub account, cannot be
+used as a GitHub Packages scope at all. Renamed to @josephkan3, the real
+account.
+
+This touches every stack in the platform, not just NewNotams -- confirmed
+by grep before starting: 43 matches across 25 files, since
+personal-site, infra/org, infra/dns, and infra/bootstrap all import these
+two shared packages too. Every import, every package.json dependency
+declaration, and the two packages' own names were updated. The internal
+dependency from @josephkan3/constructs on @josephkan3/config stays
+workspace:* for the monorepo build -- pnpm publish rewrites workspace:*
+to the real resolved version automatically at publish time, which is the
+standard, documented behavior this relies on.
+
+Both packages also gained publishConfig.registry (GitHub Packages) and a
+repository field, and lost private:true (a published package cannot be
+private in the sense that blocked prior publishing, though GitHub
+Packages' own default visibility is private regardless -- see ADR-0009).
+Bumped both to 1.0.0 from the placeholder 0.0.0, since 0.0.0 is not a
+real, installable version for anything to depend on externally.
+
+The app-level package names (@platform/personal-site, @platform/infra-dns,
+etc.) are unchanged -- they are private, workspace-internal only, never
+published, so GitHub Packages' scope constraint does not apply to them.
+
+Verified: pnpm install resolves cleanly, all 7 packages build, full repo
+test suite (9 task suites) and lint both pass with zero changes to test
+assertions themselves -- this was a pure rename, no behavior change.

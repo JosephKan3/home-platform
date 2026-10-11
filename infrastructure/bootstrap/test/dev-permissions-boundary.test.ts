@@ -40,17 +40,17 @@ process.env["PLATFORM_ACCOUNT_ID"] ??= "222222222222";
 
 import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
-import { suppressNagRules } from "@platform/constructs";
+import { suppressNagRules } from "@josephkan3/constructs";
 import {
   BOOTSTRAP_QUALIFIERS,
   DEV_PERMISSIONS_BOUNDARY_NAME,
   bootstrapQualifierFor,
   managementSynthesizer,
   synthesizerFor,
-} from "@platform/config";
+} from "@josephkan3/config";
 import { GitHubOidcStack } from "../lib/github-oidc-stack.js";
 import type { IStackSynthesizer } from "aws-cdk-lib";
-import type { Env } from "@platform/config";
+import type { Env } from "@josephkan3/config";
 
 const ACCOUNT = "222222222222";
 const REGION = "us-east-1";

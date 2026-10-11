@@ -9,7 +9,7 @@ process.env["PLATFORM_ACCOUNT_ID"] ??= "222222222222";
 
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
-import { BOOTSTRAP_QUALIFIERS, DEV_PERMISSIONS_BOUNDARY_NAME } from "@platform/config";
+import { BOOTSTRAP_QUALIFIERS, DEV_PERMISSIONS_BOUNDARY_NAME } from "@josephkan3/config";
 import { GitHubOidcStack } from "../lib/github-oidc-stack.js";
 
 const ISSUER = "token.actions.githubusercontent.com";

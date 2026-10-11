@@ -17,7 +17,7 @@ process.env["PLATFORM_ACCOUNT_ID"] ??= "222222222222";
 
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
-import { CLOUDFRONT_CERT_REGION, domains, ssmPaths, vercelRecords } from "@platform/config";
+import { CLOUDFRONT_CERT_REGION, domains, ssmPaths, vercelRecords } from "@josephkan3/config";
 import { DnsStack } from "../lib/dns-stack.js";
 import type { DnsStackProps } from "../lib/dns-stack.js";
 

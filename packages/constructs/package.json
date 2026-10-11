@@ -1,7 +1,10 @@
 {
-  "name": "@platform/constructs",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@josephkan3/constructs",
+  "version": "1.0.0",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": "https://github.com/JosephKan3/home-platform",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -11,7 +14,7 @@
     "test": "jest --passWithNoTests"
   },
   "dependencies": {
-    "@platform/config": "workspace:*"
+    "@josephkan3/config": "workspace:*"
   },
   "devDependencies": {
     "aws-cdk-lib": "^2.173.2",

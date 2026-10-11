@@ -19,11 +19,11 @@ import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import { S3BucketOrigin } from "aws-cdk-lib/aws-cloudfront-origins";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
-import { bootstrapQualifierFor } from "@platform/config";
+import { bootstrapQualifierFor } from "@josephkan3/config";
 import * as fs from "node:fs";
 import { Construct } from "constructs";
 import { flattenForNagId, suppressNagRules, suppressNagRulesAtPath } from "../nag/index.js";
-import type { EnvProfile } from "@platform/config";
+import type { EnvProfile } from "@josephkan3/config";
 
 /** Prefix the site bucket's S3 server access logs are written under. */
 export const ACCESS_LOG_PREFIX = "s3/";

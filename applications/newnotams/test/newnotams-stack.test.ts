@@ -13,7 +13,7 @@ process.env["PLATFORM_ACCOUNT_ID"] ??= "222222222222";
 
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
-import { CLOUDFRONT_CERT_REGION } from "@platform/config";
+import { CLOUDFRONT_CERT_REGION } from "@josephkan3/config";
 import { APP_NAME, NOTIFY_INTERVAL, NewNotamsStack, newNotamsParameterNames } from "../lib/newnotams-stack.js";
 import type { NewNotamsStackProps } from "../lib/newnotams-stack.js";
 

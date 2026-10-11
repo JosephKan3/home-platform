@@ -27,7 +27,7 @@ import {
   domains,
   ssmPaths,
   vercelRecords,
-} from "@platform/config";
+} from "@josephkan3/config";
 import type { StackProps } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 

@@ -41,12 +41,12 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
-import { bootstrapQualifierFor } from "@platform/config";
+import { bootstrapQualifierFor } from "@josephkan3/config";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Construct } from "constructs";
 import { flattenForNagId, suppressNagRules, suppressNagRulesAtPath } from "../nag/index.js";
-import type { EnvProfile } from "@platform/config";
+import type { EnvProfile } from "@josephkan3/config";
 
 /**
  * Runtime every OpenNext Lambda on the platform runs. See

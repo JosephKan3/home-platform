@@ -12,8 +12,8 @@
     "synth": "cdk synth -c sitePlaceholder=true"
   },
   "dependencies": {
-    "@platform/config": "workspace:*",
-    "@platform/constructs": "workspace:*"
+    "@josephkan3/config": "workspace:*",
+    "@josephkan3/constructs": "workspace:*"
   },
   "devDependencies": {
     "aws-cdk-lib": "^2.173.2",

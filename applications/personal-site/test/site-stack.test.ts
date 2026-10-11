@@ -13,7 +13,7 @@ process.env["PLATFORM_ACCOUNT_ID"] ??= "222222222222";
 
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
-import { CLOUDFRONT_CERT_REGION, domains } from "@platform/config";
+import { CLOUDFRONT_CERT_REGION, domains } from "@josephkan3/config";
 import {
   ACCESS_LOG_PREFIX,
   APP_NAME,

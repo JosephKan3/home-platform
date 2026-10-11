@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { App, Aspects, AspectPriority, Validations } from "aws-cdk-lib";
 import { AwsSolutionsChecks } from "cdk-nag";
-import { accounts, managementSynthesizer } from "@platform/config";
+import { accounts, managementSynthesizer } from "@josephkan3/config";
 import {
   LogRetentionAspect,
   NoManagedEgressAspect,
   RequiredTagsAspect,
-} from "@platform/constructs";
+} from "@josephkan3/constructs";
 import { GovernanceStack } from "../lib/governance-stack.js";
 
 const app = new App();

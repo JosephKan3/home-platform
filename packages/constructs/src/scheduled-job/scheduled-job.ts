@@ -27,7 +27,7 @@ import * as scheduler from "aws-cdk-lib/aws-scheduler";
 import { LambdaInvoke } from "aws-cdk-lib/aws-scheduler-targets";
 import { Construct } from "constructs";
 import { flattenForNagId, suppressNagRules } from "../nag/index.js";
-import type { EnvProfile } from "@platform/config";
+import type { EnvProfile } from "@josephkan3/config";
 
 /**
  * Runtime for every scheduled job on the platform.
@@ -100,7 +100,7 @@ export interface ScheduledJobProps {
   /** How often the job runs. */
   readonly schedule: ScheduledJobSchedule;
 
-  /** Drives log retention. See `@platform/config`. */
+  /** Drives log retention. See `@josephkan3/config`. */
   readonly profile: EnvProfile;
 
   /** Environment variables for the handler. */

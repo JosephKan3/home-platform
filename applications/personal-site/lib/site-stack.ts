@@ -21,7 +21,7 @@ import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as ssm from "aws-cdk-lib/aws-ssm";
-import { DEFAULT_OWNER, applyPlatformTags, domains, profileFor, ssmPaths } from "@platform/config";
+import { DEFAULT_OWNER, applyPlatformTags, domains, profileFor, ssmPaths } from "@josephkan3/config";
 import {
   ACCESS_LOG_PREFIX,
   CLOUDFRONT_LOG_PREFIX,
@@ -30,9 +30,9 @@ import {
   StaticSite,
   flattenForNagId,
   suppressNagRules,
-} from "@platform/constructs";
+} from "@josephkan3/constructs";
 import * as path from "node:path";
-import type { Env, EnvProfile } from "@platform/config";
+import type { Env, EnvProfile } from "@josephkan3/config";
 import type { StackProps } from "aws-cdk-lib";
 import type { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import type { Construct } from "constructs";

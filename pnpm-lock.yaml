@@ -50,10 +50,10 @@ importers:
 
   applications/newnotams:
     dependencies:
-      '@platform/config':
+      '@josephkan3/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@platform/constructs':
+      '@josephkan3/constructs':
         specifier: workspace:*
         version: link:../../packages/constructs
     devDependencies:
@@ -72,10 +72,10 @@ importers:
 
   applications/personal-site:
     dependencies:
-      '@platform/config':
+      '@josephkan3/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@platform/constructs':
+      '@josephkan3/constructs':
         specifier: workspace:*
         version: link:../../packages/constructs
     devDependencies:
@@ -100,10 +100,10 @@ importers:
 
   infrastructure/bootstrap:
     dependencies:
-      '@platform/config':
+      '@josephkan3/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@platform/constructs':
+      '@josephkan3/constructs':
         specifier: workspace:*
         version: link:../../packages/constructs
     devDependencies:
@@ -119,10 +119,10 @@ importers:
 
   infrastructure/dns:
     dependencies:
-      '@platform/config':
+      '@josephkan3/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@platform/constructs':
+      '@josephkan3/constructs':
         specifier: workspace:*
         version: link:../../packages/constructs
     devDependencies:
@@ -138,10 +138,10 @@ importers:
 
   infrastructure/org:
     dependencies:
-      '@platform/config':
+      '@josephkan3/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@platform/constructs':
+      '@josephkan3/constructs':
         specifier: workspace:*
         version: link:../../packages/constructs
     devDependencies:
@@ -166,7 +166,7 @@ importers:
 
   packages/constructs:
     dependencies:
-      '@platform/config':
+      '@josephkan3/config':
         specifier: workspace:*
         version: link:../config
     devDependencies:

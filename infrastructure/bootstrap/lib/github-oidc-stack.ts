@@ -19,8 +19,8 @@ import {
   DEFAULT_OWNER,
   DEV_PERMISSIONS_BOUNDARY_NAME,
   applyPlatformTags,
-} from "@platform/config";
-import { suppressNagRules } from "@platform/constructs";
+} from "@josephkan3/config";
+import { suppressNagRules } from "@josephkan3/constructs";
 import type { StackProps } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 

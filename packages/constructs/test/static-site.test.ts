@@ -10,7 +10,7 @@ import { App, Duration, Stack } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import { AwsSolutionsChecks } from "cdk-nag";
-import { profileFor, synthesizerFor } from "@platform/config";
+import { profileFor, synthesizerFor } from "@josephkan3/config";
 import { StaticSite } from "../src/index.js";
 import type { StaticSiteProps } from "../src/index.js";
 import type { PolicyViolation } from "aws-cdk-lib";

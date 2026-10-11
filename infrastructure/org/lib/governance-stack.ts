@@ -35,8 +35,8 @@ import * as ce from "aws-cdk-lib/aws-ce";
 import * as cloudtrail from "aws-cdk-lib/aws-cloudtrail";
 import * as organizations from "aws-cdk-lib/aws-organizations";
 import * as s3 from "aws-cdk-lib/aws-s3";
-import { DEFAULT_OWNER, applyPlatformTags } from "@platform/config";
-import { suppressNagRules } from "@platform/constructs";
+import { DEFAULT_OWNER, applyPlatformTags } from "@josephkan3/config";
+import { suppressNagRules } from "@josephkan3/constructs";
 import {
   assertPolicySize,
   denyExpensiveComputePolicy,

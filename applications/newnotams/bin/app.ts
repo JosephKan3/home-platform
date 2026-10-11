@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { App, AspectPriority, Aspects, Validations } from "aws-cdk-lib";
 import { AwsSolutionsChecks } from "cdk-nag";
-import { accounts, synthesizerFor } from "@platform/config";
+import { accounts, synthesizerFor } from "@josephkan3/config";
 import {
   LogRetentionAspect,
   NoManagedEgressAspect,
   RequiredTagsAspect,
-} from "@platform/constructs";
+} from "@josephkan3/constructs";
 import { NewNotamsStack } from "../lib/newnotams-stack.js";
 
 const app = new App();

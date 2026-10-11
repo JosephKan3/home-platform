@@ -11,7 +11,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import * as scheduler from "aws-cdk-lib/aws-scheduler";
 import { AwsSolutionsChecks } from "cdk-nag";
 import * as path from "node:path";
-import { profileFor } from "@platform/config";
+import { profileFor } from "@josephkan3/config";
 import { SCHEDULED_JOB_RUNTIME, ScheduledJob } from "../src/index.js";
 import type { ScheduledJobProps } from "../src/index.js";
 
