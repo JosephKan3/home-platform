@@ -138,13 +138,35 @@ One clean billing cycle.
 - [ ] **CodeDeploy progressive delivery** — canary traffic shifting with automatic rollback
       on CloudWatch alarm, for Lambda. Prove it: deliberately break a NewNotams deploy and
       show the automatic rollback. **Highest-signal item in the whole roadmap.**
-- [ ] **Migrate NewNotams from Upstash to DynamoDB.** Every operation in `user-store.ts`,
+- [x] **Migrate NewNotams from Upstash to DynamoDB.** Every operation in `user-store.ts`,
       `saved-searches.ts`, and `schedule/route.ts` is a key lookup or set membership —
       DynamoDB is the natural fit, costs ~$0 at this volume, and **preserves the no-VPC
       property** that makes the app cheap. `getKv()` in `lib/kv.ts` is already the seam.
       Enable PITR; run the restore drill here.
-- [ ] Fix the `getSchedulesDueAt` N+1 during the migration — query by notify-hour rather
+
+      Confirmed: single-table design (`NewNotamsStack.createTable`), deployed through
+      `deploy.yml`'s real `dev` → `prod` reviewer-gated CI path, not a manual `cdk deploy`.
+      `scripts/migrate-upstash-to-dynamodb.ts` moved both real production users' data —
+      verified byte-for-byte against the Upstash source (profile, searches, dismissals, push
+      subscriptions) after the run, including correctly skipping and logging the one orphan
+      record already known from planning. `getKv()`/Upstash remains in use for exactly one
+      thing: `lib/rate-limit.ts`'s `@upstash/ratelimit` sliding-window limiter, which is
+      Redis-script-based, not a KV access pattern — deliberately not migrated.
+
+      PITR restore drill performed 2026-10-14: `restore-table-to-point-in-time
+      --use-latest-restorable-time` against the real production table. Issued 23:34:40,
+      restored table reached `ACTIVE` at 23:39:36 — **≈4m56s**. `scan --select COUNT`
+      confirmed all 7 items present and byte-identical to the live table; the GSI (`gsi1`)
+      restored correctly (`ACTIVE`, same key schema and `ALL` projection). Drill table deleted
+      immediately after verification — this did not touch the live table at any point.
+- [x] Fix the `getSchedulesDueAt` N+1 during the migration — query by notify-hour rather
       than fanning out one `get` per user.
+
+      Confirmed: `lib/notify.ts`'s `getSchedulesDueAt` is now a single `QueryCommand` against
+      `gsi1` (`gsi1pk = HOUR#<hour>`). The old `smembers` + N `get`s fan-out is gone — the
+      write side (`putSchedule`) now writes one `SCHEDULE#<hour>` marker item per selected
+      hour in the same transaction as the canonical `SCHEDULE` item, which is what makes the
+      read side a single query regardless of user count.
 - [ ] Authentik, or **reconsider Cognito** — with only NewNotams needing identity, Authentik's
       Fargate task ($12/mo) plus an ALB ($17/mo) is $29/mo to replace a working Auth.js
       setup. Decide against real requirements. Migrating existing users is the interesting
@@ -158,7 +180,9 @@ One clean billing cycle.
 - [ ] CloudFormation drift detection on a schedule — the substitute for a GitOps reconcile loop.
 
 **Exit criteria:** a canary deploy has automatically rolled back on an injected failure.
-NewNotams is off Upstash. A restore has been performed and timed.
+NewNotams is off Upstash **for everything except rate limiting** (see the migration item
+above for why that one piece stays). A restore has been performed and timed — done,
+2026-10-14, ≈4m56s. The canary/rollback criterion is not yet attempted.
 
 ---
 

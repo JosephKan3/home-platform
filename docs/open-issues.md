@@ -5,10 +5,9 @@ work and whether it gates the Phase 0 exit criteria.
 
 ---
 
-## 1. The dev permissions boundary did not constrain `cdk deploy`
+## 1. The dev permissions boundary did not constrain `cdk deploy` — resolved
 
-**Severity: was high. Resolved in code; one manual step remains before the exit criterion
-can be signed off.**
+**Severity: was high, now resolved.** Code fix and the live probe are both done.
 
 ### What was broken, and why it matters
 
@@ -80,7 +79,15 @@ is what closes the loop, and it is deliberately a two-call probe: tagging an unt
 must **succeed** while tagging an `env=prod` bucket is **denied**. Without the control call
 the result is indistinguishable from the original bug.
 
-**Until that probe is run against the real account, the exit criterion is not signed off.**
+**Run against the real account.** Both calls gave the required result: the control bucket
+(untagged) accepted `create-bucket` under the assumed `cdk-hnbdev-cfn-exec-role`, confirming
+the role genuinely holds `AdministratorAccess`; the probe bucket (`env=prod`, ABAC enabled)
+was denied `PutBucketTagging` with `AccessDenied ... with an explicit deny in a permissions
+boundary: arn:aws:iam::696835009133:policy/cdk-dev-permissions-boundary`. Cleanup done per
+the README's own step 4: both throwaway buckets deleted, the dev CFN exec role's trust policy
+restored to its original `cloudformation.amazonaws.com`-only statement. The AWS CLI needed
+upgrading from 2.23.11 to 2.38.0 first — `put-bucket-abac` does not exist in older CLI
+versions, confirmed directly rather than assumed from version numbers alone.
 
 ---
 

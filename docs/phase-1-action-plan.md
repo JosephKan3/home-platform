@@ -627,14 +627,23 @@ despite the relevant stage being done, because "done" and "proven" turned out to
 things more than once this phase (the alarm existing vs. the alarm's email actually arriving
 being the sharpest example).
 
-- [ ] NewNotams serves production traffic at `newnotams.net` from Lambda + CloudFront, with
+- [x] NewNotams serves production traffic at `newnotams.net` from Lambda + CloudFront, with
       nobody touching the console for a routine deploy (same CI discipline as Phase 0's
       `deploy-dev`/`deploy-prod`, extended to this stack).
 
-      **Not met.** `NewNotamsStack` is not wired into `.github/workflows/deploy.yml` at all —
-      confirmed by grep, zero matches. Every deploy this entire phase was a manual
-      `cdk deploy` from a local machine. The site serves production traffic correctly; the "no
-      console, no manual step" part of this criterion is simply not built yet.
+      Confirmed, the hard way: wiring `NewNotamsStack` into `.github/workflows/deploy.yml`
+      surfaced five independent real bugs before a single CI deploy succeeded end to end —
+      missing npm registry auth, a missing `packages: read` permission (GitHub forces every
+      unlisted permission to `none` once a workflow declares the block at all), an OIDC trust
+      policy assuming the immutable subject format on a repo that predated GitHub's cutover,
+      missing `esbuild` causing a Docker arm64/x64 QEMU mismatch, and `vapid-private-key` still
+      being `SecureString` + `valueFromLookup` under a role with no direct `ssm:GetParameter`.
+      Fixed all five, then a `dev` → `prod` run went fully green through the real reviewer
+      gate, confirmed live at `newnotams.net` returning `200`. A follow-up session found and
+      fixed a sixth: the prod build step baked a literal `"placeholder"` into
+      `NEXT_PUBLIC_VAPID_PUBLIC_KEY` (inlined client-side at build time, unlike every other var
+      there), breaking push subscribe silently; fixed by fetching the real key from SSM via the
+      prod lookup role before the build runs, confirmed against the live bundle afterward.
 - [x] The hourly notify job runs via direct EventBridge → Lambda invocation. `/api/notify`'s
       GET cron path and `CRON_SECRET` are gone; POST (user-triggered test send) still works
       from the browser.
@@ -694,11 +703,15 @@ being the sharpest example).
       cycle. Month-to-date through 2026-10-11 is $1.97 (`aws ce get-cost-and-usage`), a
       healthy trajectory, but "one full billing cycle" means waiting for October (or the next
       complete month) to close before this can honestly be checked off.
-- [ ] A teardown runbook exists for everything built in this phase, matching Phase 0's
+- [x] A teardown runbook exists for everything built in this phase, matching Phase 0's
       `docs/runbooks/teardown-phase-0.md` pattern.
 
-      **Not met.** `docs/runbooks/teardown-phase-1.md` does not exist yet — confirmed, not
-      assumed. A real gap to close before Phase 1 is actually done, not just "mostly done."
+      Confirmed: `docs/runbooks/teardown-phase-1.md` exists, covers `NewNotamsStack`,
+      `newnotams.net`'s Route53 zone/cert (which shares `DnsStack` with the live `josephkan.ca`
+      zone — redeploy with `createProductZone` omitted, not destroy, unless tearing down both
+      phases together), `NewNotamsGitHubOidcStack`'s `gha-newnotams-*` roles, and the GitHub
+      Packages publish/visibility decision, each verified against the live account's actual
+      resource names, stack outputs, and construct source rather than assumed.
 
 ---
 
