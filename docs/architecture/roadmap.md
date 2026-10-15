@@ -199,13 +199,29 @@ One clean billing cycle.
       write side (`putSchedule`) now writes one `SCHEDULE#<hour>` marker item per selected
       hour in the same transaction as the canonical `SCHEDULE` item, which is what makes the
       read side a single query regardless of user count.
-- [ ] Authentik, or **reconsider Cognito** — with only NewNotams needing identity, Authentik's
+- [x] Authentik, or **reconsider Cognito** — with only NewNotams needing identity, Authentik's
       Fargate task ($12/mo) plus an ALB ($17/mo) is $29/mo to replace a working Auth.js
       setup. Decide against real requirements. Migrating existing users is the interesting
       part either way; `findOrCreateOAuthUser` already derives stable IDs from email hashes,
       which makes ID continuity tractable.
+
+      **Decided: keep Auth.js.** Confirmed via the real inventory (both actual production
+      users are Google-only, zero password accounts) that nothing is broken today. Authentik
+      rejected outright — $29/mo recurring, plus a second stateful service to operate, for
+      multi-app SSO/admin features a single-user app doesn't need. Cognito considered more
+      seriously (free at this scale) but rejected after walking through both integration
+      shapes concretely: routing Google through Cognito's Hosted UI adds a visible
+      AWS-branded redirect hop for no corresponding benefit; using Cognito only as a
+      credentials backing store is a smaller, real option but the user explicitly ruled out
+      Cognito on DX grounds before that design was finalized. `findOrCreateOAuthUser`'s
+      stable email-hash ID scheme stays in place regardless, so this remains revisitable
+      without an existing-user migration problem if a concrete need (team access, compliance,
+      multi-app SSO) shows up later.
 - [ ] ECS Fargate cluster + shared ALB **only if** something genuinely long-running exists.
       Both current apps are CloudFront-fronted, so this may not be needed at all.
+
+      Narrower now that Authentik is rejected: nothing currently on the roadmap needs Fargate.
+      Revisit only if a future need (not identity) requires a long-running process.
 - [ ] Grafana Cloud free tier as the OTel backend. Dashboards + SLO alerts.
 - [ ] Supply chain: SBOM generation, Renovate automerge for patches, cosign if containers exist.
 - [ ] cdk-nag blocking in CI with documented, justified suppressions.
