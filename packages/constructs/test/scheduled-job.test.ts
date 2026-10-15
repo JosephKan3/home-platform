@@ -8,6 +8,8 @@
 
 import { App, Duration, Stack, Validations } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as codedeploy from "aws-cdk-lib/aws-codedeploy";
 import * as scheduler from "aws-cdk-lib/aws-scheduler";
 import { AwsSolutionsChecks } from "cdk-nag";
 import * as path from "node:path";
@@ -196,6 +198,172 @@ describe("schedule", () => {
   });
 });
 
+describe("progressive delivery (Phase 2 roadmap: canary + automatic rollback)", () => {
+  // A standalone alarm to pass explicitly via `deploymentAlarm`, exercising
+  // the override path (the construct's own default-alarm path is covered
+  // separately below). What matters to these tests is only that *an* alarm
+  // reaches `deploymentAlarm` and is the one actually wired to the
+  // deployment group, not which metric it watches.
+  function testAlarm(stack: Stack): cloudwatch.Alarm {
+    return new cloudwatch.Alarm(stack, "TestAlarm", {
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/Lambda",
+        metricName: "Errors",
+        statistic: "Sum",
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+    });
+  }
+
+  test("builds its own default alarm (fn.metricErrors, threshold 1) when none is given", () => {
+    const stack = new Stack(new App(), "NoAlarmStack", { env: ENV });
+    const job = new ScheduledJob(stack, "Job", {
+      entry: ENTRY,
+      schedule: Duration.hours(1),
+      profile: profileFor("prod"),
+      progressiveDelivery: true,
+    });
+    expect(job.deploymentGroup).toBeDefined();
+
+    Template.fromStack(stack).hasResourceProperties("AWS::CloudWatch::Alarm", {
+      Namespace: "AWS/Lambda",
+      MetricName: "Errors",
+      Statistic: "Sum",
+      Period: 3600,
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      TreatMissingData: "notBreaching",
+    });
+  });
+
+  test("a cron ScheduleExpression (no Duration to derive a period from) falls back to a 1-minute alarm period", () => {
+    const stack = new Stack(new App(), "CronAlarmStack", { env: ENV });
+    new ScheduledJob(stack, "Job", {
+      entry: ENTRY,
+      schedule: scheduler.ScheduleExpression.cron({ minute: "0", hour: "6" }),
+      profile: profileFor("prod"),
+      progressiveDelivery: true,
+    });
+
+    Template.fromStack(stack).hasResourceProperties("AWS::CloudWatch::Alarm", { Period: 60 });
+  });
+
+  test("off by default — the schedule still targets the bare function, no alias or deployment group exists", () => {
+    const stack = new Stack(new App(), "DefaultOffStack", { env: ENV });
+    const job = new ScheduledJob(stack, "Job", {
+      entry: ENTRY,
+      schedule: Duration.hours(1),
+      profile: profileFor("prod"),
+    });
+
+    expect(job.liveAlias).toBeUndefined();
+    expect(job.deploymentGroup).toBeUndefined();
+
+    const template = Template.fromStack(stack);
+    template.resourceCountIs("AWS::Lambda::Alias", 0);
+    template.resourceCountIs("AWS::CodeDeploy::DeploymentGroup", 0);
+  });
+
+  test("when enabled: the schedule targets the alias, not the bare function", () => {
+    const stack = new Stack(new App(), "EnabledStack", { env: ENV });
+    const job = new ScheduledJob(stack, "Job", {
+      entry: ENTRY,
+      schedule: Duration.hours(1),
+      profile: profileFor("prod"),
+      progressiveDelivery: true,
+      deploymentAlarm: testAlarm(stack),
+    });
+    expect(job.liveAlias).toBeDefined();
+
+    const template = Template.fromStack(stack);
+    template.resourceCountIs("AWS::Lambda::Alias", 1);
+    template.hasResourceProperties("AWS::Lambda::Alias", { Name: "live" });
+
+    template.hasResourceProperties("AWS::Scheduler::Schedule", {
+      Target: Match.objectLike({
+        // The schedule's target resolves to a `Ref` on the alias's own
+        // logical ID, not the function's — confirmed directly rather than
+        // assumed, since CDK's `Alias.functionArn` getter (unlike
+        // `Function`'s) is a plain `Ref`, not an `Fn::GetAtt`/`Fn::Join`.
+        Arn: { Ref: Match.stringLikeRegexp("^JobLiveAlias") },
+      }),
+    });
+  });
+
+  test("the alias's UpdatePolicy hands the traffic shift to CodeDeploy", () => {
+    const stack = new Stack(new App(), "UpdatePolicyStack", { env: ENV });
+    const job = new ScheduledJob(stack, "Job", {
+      entry: ENTRY,
+      schedule: Duration.hours(1),
+      profile: profileFor("prod"),
+      progressiveDelivery: true,
+      deploymentAlarm: testAlarm(stack),
+    });
+
+    const template = Template.fromStack(stack);
+    const [, alias] = Object.entries(template.findResources("AWS::Lambda::Alias"))[0]!;
+    const updatePolicy = (alias as { UpdatePolicy?: Record<string, unknown> }).UpdatePolicy;
+    expect(updatePolicy).toBeDefined();
+    expect(updatePolicy).toHaveProperty("CodeDeployLambdaAliasUpdate");
+    expect(job.deploymentGroup).toBeDefined();
+  });
+
+  test("uses the 10%/5min canary config by default, and accepts an override", () => {
+    const stack = new Stack(new App(), "DeploymentConfigStack", { env: ENV });
+    new ScheduledJob(stack, "Job", {
+      entry: ENTRY,
+      schedule: Duration.hours(1),
+      profile: profileFor("prod"),
+      progressiveDelivery: true,
+      deploymentAlarm: testAlarm(stack),
+    });
+
+    Template.fromStack(stack).hasResourceProperties("AWS::CodeDeploy::DeploymentGroup", {
+      DeploymentConfigName: Match.stringLikeRegexp("CodeDeployDefault.Lambda.*Canary10Percent5Minutes"),
+    });
+
+    const linearStack = new Stack(new App(), "LinearStack", { env: ENV });
+    new ScheduledJob(linearStack, "Job", {
+      entry: ENTRY,
+      schedule: Duration.hours(1),
+      profile: profileFor("prod"),
+      progressiveDelivery: true,
+      deploymentAlarm: testAlarm(linearStack),
+      deploymentConfig: codedeploy.LambdaDeploymentConfig.LINEAR_10PERCENT_EVERY_1MINUTE,
+    });
+
+    Template.fromStack(linearStack).hasResourceProperties("AWS::CodeDeploy::DeploymentGroup", {
+      DeploymentConfigName: Match.stringLikeRegexp("CodeDeployDefault.Lambda.*Linear10PercentEvery1Minute"),
+    });
+  });
+
+  test("passes cdk-nag with the alias path enabled — no unsuppressed findings introduced", () => {
+    const app = new App();
+    const stack = new Stack(app, "ProgressiveNagStack", { env: ENV });
+    const job = new ScheduledJob(stack, "Job", {
+      entry: ENTRY,
+      schedule: Duration.hours(1),
+      profile: profileFor("prod"),
+      description: "Test job.",
+      progressiveDelivery: true,
+      deploymentAlarm: testAlarm(stack),
+    });
+    expect(job.deploymentGroup).toBeDefined();
+
+    const errors = new AwsSolutionsChecks(app, { verbose: true })
+      .validateScope(app)
+      .violations.filter((violation) => violation.severity === "error")
+      .map(
+        (violation) =>
+          `${violation.ruleName}: ${violation.violatingResources[0]?.constructPath ?? ""}`,
+      );
+
+    expect(errors).toEqual([]);
+  });
+});
+
 describe("caller-added grants", () => {
   test("fn and logGroup are exposed so a stack can grant without reaching inside", () => {
     const stack = new Stack(new App(), "GrantStack", { env: ENV });
@@ -263,3 +431,4 @@ function executionRoleStatements(template: Template): Array<Record<string, unkno
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [value];
 }
+

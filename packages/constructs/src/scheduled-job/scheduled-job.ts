@@ -16,9 +16,18 @@
  *     description: "Hourly NOTAM notification sweep.",
  *   });
  *   job.role.addToPolicy(new iam.PolicyStatement({ ... }));
+ *
+ * `progressiveDelivery` is a fifth thing, opt-in: a CodeDeploy canary in
+ * front of the schedule's invoke target (Phase 2, roadmap's "highest-signal
+ * item"). See that prop's own doc comment for the mechanics — the short
+ * version is that nothing here is reusable without the caller's own
+ * CloudWatch alarm, since "did this job fail" is always application-
+ * specific and this construct has no opinion on it.
  */
 
 import { Duration, RemovalPolicy, Stack } from "aws-cdk-lib";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as codedeploy from "aws-cdk-lib/aws-codedeploy";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
@@ -124,6 +133,73 @@ export interface ScheduledJobProps {
 
   /** How long Scheduler keeps retrying. Default 30 minutes. */
   readonly maxEventAge?: Duration;
+
+  /**
+   * Enable a CodeDeploy canary in front of the schedule's invoke target.
+   *
+   * Without this, a deploy that breaks the handler goes live for every
+   * future invocation instantly — CloudFormation just repoints
+   * EventBridge at the new `$LATEST` code with no gap. With it: a new
+   * `Version` is published, an `Alias` (named `"live"`) is what the
+   * schedule actually targets, and `UpdatePolicy: codeDeployLambdaAliasUpdate`
+   * on that alias means CloudFormation hands the traffic shift to
+   * CodeDeploy instead of doing it itself. `deploymentConfig` controls how
+   * gradual that shift is (default: 10% for 5 minutes, then the rest).
+   *
+   * Requires `deploymentAlarm`: a canary with no alarm attached shifts
+   * traffic on a timer and never rolls back on its own, which is a canary
+   * in name only. Synth throws if this is `true` without one, rather than
+   * silently deploying unmonitored — this is deliberately not a silent
+   * default for the same reason `ScheduledJob` has no ambient grants.
+   *
+   * Expected on `profile.progressiveDelivery` (prod: true, dev: false) —
+   * see `@josephkan3/config`'s `EnvProfile`. Passed explicitly rather than
+   * read from `profile` directly inside this construct, because a future
+   * job might reasonably want this off in prod too (e.g. one with no
+   * sensible canary alarm) — the profile sets the default a caller should
+   * follow, not a mandate this construct enforces.
+   */
+  readonly progressiveDelivery?: boolean;
+
+  /**
+   * The alarm CodeDeploy watches during the canary window.
+   *
+   * Optional even when `progressiveDelivery` is true: omitted, this
+   * construct builds its own default from `fn.metricErrors()` — threshold
+   * 1 in one evaluation period, matching the schedule's own interval
+   * (`props.schedule`, converted to seconds), on the theory that "this
+   * invocation threw" is the right default definition of "this job is
+   * broken" for the overwhelming majority of scheduled jobs, including
+   * the one this prop was built for (`NewNotamsStack`'s notify sweep).
+   *
+   * There is no *ordering* problem building this internally the way there
+   * would be for a caller: `fn` already exists by the time this prop is
+   * read, inside this construct's own constructor — unlike a caller, who
+   * would need `fn` before `ScheduledJob` exists to build the same alarm,
+   * a real chicken-and-egg this design deliberately avoids forcing on
+   * every consumer.
+   *
+   * Pass an explicit alarm only when the default's definition of "broken"
+   * is wrong for a specific job — e.g. a job whose real failure signal is
+   * a custom metric, not an uncaught throw. `NewNotamsStack`'s own
+   * `NotifyFailureAlarm` (the one that pages a human, via SNS) is
+   * deliberately NOT the same CloudFormation resource as this one: they
+   * watch the identical metric and threshold, so they fire at the same
+   * real-world moment, but conflating "the thing that pages a human" with
+   * "the thing CodeDeploy watches during a 5-minute canary window" would
+   * make each harder to reason about alone than two alarms with one
+   * shared cause.
+   */
+  readonly deploymentAlarm?: cloudwatch.IAlarmRef;
+
+  /**
+   * How the canary shifts traffic. Default
+   * `LambdaDeploymentConfig.CANARY_10PERCENT_5MINUTES` (CodeDeploy's own
+   * default for `LambdaDeploymentGroup` — stated explicitly here so it is
+   * discoverable from this construct's props rather than only from
+   * aws-cdk-lib's).
+   */
+  readonly deploymentConfig?: codedeploy.ILambdaDeploymentConfig;
 }
 
 export class ScheduledJob extends Construct {
@@ -138,6 +214,17 @@ export class ScheduledJob extends Construct {
 
   /** The schedule that invokes the function. */
   readonly schedule: scheduler.Schedule;
+
+  /**
+   * Present only when `progressiveDelivery` is true. The alias EventBridge
+   * actually targets — not `fn` directly. A deploy that changes the
+   * handler publishes a new `Version` and repoints this alias; CodeDeploy
+   * owns the traffic shift from there.
+   */
+  readonly liveAlias?: lambda.Alias;
+
+  /** Present only when `progressiveDelivery` is true. */
+  readonly deploymentGroup?: codedeploy.LambdaDeploymentGroup;
 
   constructor(scope: Construct, id: string, props: ScheduledJobProps) {
     super(scope, id);
@@ -182,7 +269,88 @@ export class ScheduledJob extends Construct {
       },
     });
 
-    this.schedule = this.createSchedule(props);
+    if (props.progressiveDelivery) {
+      const { alias, deploymentGroup } = this.createProgressiveDelivery(props);
+      this.liveAlias = alias;
+      this.deploymentGroup = deploymentGroup;
+    }
+
+    this.schedule = this.createSchedule(props, this.liveAlias);
+  }
+
+  /**
+   * `fn.currentVersion` + an `Alias` + a `LambdaDeploymentGroup` watching
+   * `deploymentAlarm`. The alias is what `createSchedule` targets instead
+   * of `fn` — CodeDeploy only intercepts an alias's traffic shift, never a
+   * bare function's.
+   *
+   * Named `"live"` rather than something environment-specific: there is
+   * exactly one alias per `ScheduledJob` instance, and the instance itself
+   * already lives inside whichever stack/environment deployed it.
+   */
+  private createProgressiveDelivery(
+    props: ScheduledJobProps,
+  ): { alias: lambda.Alias; deploymentGroup: codedeploy.LambdaDeploymentGroup } {
+    const alias = new lambda.Alias(this, "LiveAlias", {
+      aliasName: "live",
+      version: this.fn.currentVersion,
+    });
+
+    const deploymentAlarm = props.deploymentAlarm ?? this.createDefaultDeploymentAlarm(props.schedule);
+
+    const deploymentGroup = new codedeploy.LambdaDeploymentGroup(this, "DeploymentGroup", {
+      alias,
+      deploymentConfig: props.deploymentConfig ?? codedeploy.LambdaDeploymentConfig.CANARY_10PERCENT_5MINUTES,
+      alarms: [deploymentAlarm],
+    });
+
+    // `LambdaDeploymentGroup`'s constructor unconditionally attaches
+    // `AWSCodeDeployRoleForLambdaLimited` to the service role it creates for
+    // itself — confirmed by reading aws-cdk-lib's own source
+    // (deployment-group.js: `this.role.addManagedPolicy(...)`), not a choice
+    // this construct makes or could avoid through any prop. It is AWS's own
+    // purpose-built, scoped-down managed policy for exactly this job
+    // (CodeDeploy driving a Lambda alias's traffic shift), not a broad
+    // administrative one — the "Limited" in its name is AWS's own
+    // acknowledgment of the same scoping concern AwsSolutions-IAM4 raises.
+    suppressNagRules(deploymentGroup.role, [
+      {
+        id: "AwsSolutions-IAM4[Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSCodeDeployRoleForLambdaLimited]",
+        reason:
+          "aws-cdk-lib's LambdaDeploymentGroup attaches this unconditionally in its own " +
+          "constructor; there is no prop to replace it with an inline policy. It is AWS's " +
+          "purpose-scoped policy for CodeDeploy-driven Lambda alias traffic shifting, not a " +
+          "broad administrative grant (ADR-0007).",
+      },
+    ]);
+
+    return { alias, deploymentGroup };
+  }
+
+  /**
+   * Built only when `progressiveDelivery` is true and the caller did not
+   * pass their own `deploymentAlarm` — see that prop's doc comment for why
+   * this exists and what it deliberately does not try to be (the alarm
+   * that pages a human, which is the consuming stack's own concern).
+   *
+   * Mirrors the shape `NewNotamsStack.createNotifyFailureAlarm` already
+   * hand-rolled before this construct could build it internally: Lambda's
+   * own `Errors` metric, summed, threshold 1 — the first failed invocation
+   * trips it, not a pattern. The period is `props.schedule` converted to
+   * seconds when it is a plain interval (`Duration`); a `ScheduleExpression`
+   * (cron, or a fixed-rate string) has no `Duration` to convert, so those
+   * fall back to one minute — CloudWatch's shortest period — rather than
+   * guessing an interval from an expression this construct does not parse.
+   */
+  private createDefaultDeploymentAlarm(schedule: ScheduledJobSchedule): cloudwatch.Alarm {
+    const period = schedule instanceof Duration ? schedule : Duration.minutes(1);
+    return new cloudwatch.Alarm(this, "DeploymentAlarm", {
+      metric: this.fn.metricErrors({ period, statistic: "Sum" }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
   }
 
   /**
@@ -236,8 +404,13 @@ export class ScheduledJob extends Construct {
    * EventBridge Scheduler, not an `events.Rule`. Scheduler carries retry and
    * dead-letter configuration per schedule rather than per target, and costs
    * nothing at this volume.
+   *
+   * Targets `liveAlias` instead of `fn` when progressive delivery is on —
+   * CodeDeploy only intercepts a traffic shift on an alias's `UpdatePolicy`,
+   * never a bare function's, so a schedule that kept targeting `fn` would
+   * bypass the canary entirely and defeat the whole point of this prop.
    */
-  private createSchedule(props: ScheduledJobProps): scheduler.Schedule {
+  private createSchedule(props: ScheduledJobProps, liveAlias?: lambda.Alias): scheduler.Schedule {
     const stack = Stack.of(this);
 
     // aws-cdk-lib creates the target's invoke role at *stack* scope, with an ID
@@ -249,19 +422,38 @@ export class ScheduledJob extends Construct {
 
     const schedule = new scheduler.Schedule(this, "Schedule", {
       schedule: toScheduleExpression(props.schedule),
-      target: new LambdaInvoke(this.fn, {
+      target: new LambdaInvoke(liveAlias ?? this.fn, {
         retryAttempts: props.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS,
         maxEventAge: props.maxEventAge ?? DEFAULT_MAX_EVENT_AGE,
       }),
       description: props.scheduleDescription ?? props.description,
     });
 
-    this.suppressTargetRoleFinding(stack, before);
+    this.suppressTargetRoleFinding(stack, before, liveAlias);
 
     return schedule;
   }
 
-  private suppressTargetRoleFinding(stack: Stack, before: ReadonlySet<string>): void {
+  /**
+   * `Function.resourceArnsForGrantInvoke` grants `[functionArn, functionArn + ":*"]`
+   * — the wildcard covers every alias/version, which is unavoidable when
+   * the target is the bare function. `Alias`'s own `resourceArnsForGrantInvoke`
+   * (via `QualifiedFunctionBase`) grants only `[aliasArn]` — a single,
+   * concrete ARN, no wildcard — since an alias has no further
+   * sub-resources to cover. Confirmed by reading both implementations
+   * directly rather than assumed: the suppression below only applies to
+   * the bare-function path, and is skipped entirely when `liveAlias` is
+   * the target, because there is no finding to suppress.
+   */
+  private suppressTargetRoleFinding(
+    stack: Stack,
+    before: ReadonlySet<string>,
+    liveAlias?: lambda.Alias,
+  ): void {
+    if (liveAlias !== undefined) {
+      return;
+    }
+
     const targetRole = stack.node.children.find(
       (child): child is iam.Role =>
         child instanceof iam.Role &&
