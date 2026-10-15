@@ -135,9 +135,41 @@ One clean billing cycle.
 
 **Budget: $25-50/mo**
 
-- [ ] **CodeDeploy progressive delivery** — canary traffic shifting with automatic rollback
+- [x] **CodeDeploy progressive delivery** — canary traffic shifting with automatic rollback
       on CloudWatch alarm, for Lambda. Prove it: deliberately break a NewNotams deploy and
       show the automatic rollback. **Highest-signal item in the whole roadmap.**
+
+      Built as a reusable, opt-in feature on `ScheduledJob`
+      (`@josephkan3/constructs@1.1.0`'s `progressiveDelivery` prop), not NewNotams-specific —
+      gated on `profile.progressiveDelivery` (already prod:true/dev:false in
+      `@josephkan3/config`, unused by any construct before this). Wired into NewNotams'
+      notify job: EventBridge now targets a Lambda `Alias` instead of the bare function, with
+      `UpdatePolicy: codeDeployLambdaAliasUpdate` handing traffic shifts to CodeDeploy
+      (`CANARY_10PERCENT_5MINUTES` default).
+
+      **Proven live against the real account, 2026-10-15**, not just synthed: disabled the
+      real EventBridge schedule, temporarily shrank the deployment alarm's period to 60s (CDK
+      still declares 3600s — this was a scoped, reverted-after manual override, not drift),
+      deployed an opt-in-broken handler (`DRILL_FORCE_FAILURE` env var, default off) via a
+      manually-created CodeDeploy deployment shifting the alias from v2 to v3, then invoked
+      the alias enough times to land traffic on the new 10% weight. Real result, confirmed via
+      `aws cloudwatch describe-alarm-history` and `aws deploy get-deployment`:
+      alarm `OK → ALARM` at 15:43:54, CodeDeploy stopped the deployment with
+      `ALARM_ACTIVE` naming the alarm, and the `live` alias was back on v2 with **zero manual
+      intervention** — confirmed via `aws lambda get-alias` immediately after. Alarm cleared
+      `ALARM → OK` one minute later as the bad version stopped receiving traffic.
+
+      Drill cleanup took longer than the drill itself: the alarm's own real datapoint
+      (1 error) stayed inside the 1-hour period after restoring it from the drill's 60s
+      override, which legitimately blocked the next two real deploys (reverting the drill
+      code) with the identical `ALARM_ACTIVE` mechanism working exactly as designed against
+      me, not a bug. Fixed by temporarily disabling the deployment group's alarm *watching*
+      (`aws deploy update-deployment-group --alarm-configuration enabled=false`) for the one
+      deploy needed to ship the revert, then re-enabling it immediately after — a supported,
+      scoped operation, not a CDK-level change. Final state verified clean: schedule enabled,
+      alias on the real reverted code, alarm period back to 3600s, deployment group alarm
+      watching re-enabled, stack `UPDATE_COMPLETE`, the real SNS email subscription
+      unaffected throughout.
 - [x] **Migrate NewNotams from Upstash to DynamoDB.** Every operation in `user-store.ts`,
       `saved-searches.ts`, and `schedule/route.ts` is a key lookup or set membership —
       DynamoDB is the natural fit, costs ~$0 at this volume, and **preserves the no-VPC
@@ -182,7 +214,9 @@ One clean billing cycle.
 **Exit criteria:** a canary deploy has automatically rolled back on an injected failure.
 NewNotams is off Upstash **for everything except rate limiting** (see the migration item
 above for why that one piece stays). A restore has been performed and timed — done,
-2026-10-14, ≈4m56s. The canary/rollback criterion is not yet attempted.
+2026-10-14, ≈4m56s. The canary/rollback criterion is done — proven live, 2026-10-15, real
+alarm trip and automatic rollback confirmed via CloudWatch alarm history and
+`aws deploy get-deployment` (see that item's own entry above for the full account).
 
 ---
 
