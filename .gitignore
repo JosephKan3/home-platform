@@ -11,6 +11,19 @@ coverage/
 # assumed). Must never be committed.
 cdk.context.json
 
+# infrastructure/network is the one exception: ec2.Vpc's constructor calls
+# Stack.availabilityZones unconditionally whenever an explicit
+# `availabilityZones` prop is given (to validate it against the stack's own
+# AZ list) — confirmed by reading aws-cdk-lib's own Vpc and Stack source,
+# not assumed. There is no CDK-level way to avoid this live
+# ec2:DescribeAvailabilityZones call for a concretely-enviroedstack, which
+# broke deploy.yml's dev job (gha-deploy-dev holds only sts:AssumeRole, no
+# direct AWS permissions, by design) on a from-scratch CI checkout with no
+# pre-existing cache. us-east-1's AZ list is static, authoritative data
+# (confirmed against the real account), not live state the way every other
+# use of this file's cache is — committing it here is the least-bad option.
+!infrastructure/network/cdk.context.json
+
 # Build output only. Do NOT use a bare `lib/` pattern: CDK convention puts stack
 # SOURCE in <package>/lib/, so `lib/` silently excludes real code from git.
 packages/*/dist/

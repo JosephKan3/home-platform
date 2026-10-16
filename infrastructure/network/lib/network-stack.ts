@@ -44,7 +44,7 @@
  * public-subnet compute.
  */
 
-import { CfnOutput, Stack } from "aws-cdk-lib";
+import { CfnOutput, Stack, Validations } from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -109,6 +109,16 @@ export class NetworkStack extends Stack {
         "Changes on instance replacement — this is why the Tailscale auth key is read at every " +
         "boot rather than baked in once: a replaced instance re-authenticates itself automatically.",
     });
+
+    // W3010 (CloudFormation Validate, not cdk-nag — see createVpc's own
+    // comment on why hardcoded AZs are deliberate here).
+    Validations.of(this).acknowledge({
+      id: "CloudFormation-Validate::W3010",
+      reason:
+        "This stack's env is always concrete (one Platform account) and the alternative is the " +
+        "live ec2:DescribeAvailabilityZones lookup that broke deploy.yml's dev job on a " +
+        "from-scratch CI checkout — see createVpc's own comment.",
+    });
   }
 
   /**
@@ -126,8 +136,29 @@ export class NetworkStack extends Stack {
   private createVpc(): ec2.Vpc {
     const vpc = new ec2.Vpc(this, "Vpc", {
       ipAddresses: ec2.IpAddresses.cidr(VPC_CIDR),
-      maxAzs: 2,
+      // Explicit, not `maxAzs: 2` — deterministic (matches ADR-0002's own
+      // language) rather than "whichever two AZs CDK's lookup happens to
+      // return first".
+      //
+      // This does NOT avoid a live context lookup, though — confirmed by
+      // reading aws-cdk-lib's own source: `Vpc`'s constructor calls
+      // `stack.availabilityZones` unconditionally to *validate* this list
+      // against the stack's real AZs, and `Stack.availabilityZones`
+      // itself always queries the `AVAILABILITY_ZONE_PROVIDER` context
+      // for any concretely-enviroedstack. There is no prop on either class
+      // that skips this. The actual fix is `cdk.context.json` being
+      // committed for this one package (see .gitignore's own comment) —
+      // this broke deploy.yml's `dev` job (gha-deploy-dev holds only
+      // sts:AssumeRole, no direct AWS permissions, by design) on a
+      // from-scratch CI checkout with no pre-existing lookup cache.
+      availabilityZones: ["us-east-1a", "us-east-1b"],
       natGateways: 0,
+      // W3010's advice ("avoid hardcoding AZs, a stack should be portable
+      // across regions") does not apply: this stack's `env` is always
+      // concrete (accounts.platform.region), there is exactly one Platform
+      // account, and the alternative is the live
+      // `ec2:DescribeAvailabilityZones` lookup that broke deploy.yml's
+      // `dev` job in the first place (see the comment above).
       subnetConfiguration: [
         { name: "Public", subnetType: ec2.SubnetType.PUBLIC, cidrMask: 20 },
         { name: "Isolated", subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 20 },
