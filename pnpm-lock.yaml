@@ -114,6 +114,25 @@ importers:
         specifier: ^10.4.2
         version: 10.8.1
 
+  infrastructure/network:
+    dependencies:
+      '@josephkan3/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@josephkan3/constructs':
+        specifier: workspace:*
+        version: link:../../packages/constructs
+    devDependencies:
+      aws-cdk-lib:
+        specifier: ^2.173.2
+        version: 2.263.0(constructs@10.8.1)
+      cdk-nag:
+        specifier: ^3.0.2
+        version: 3.0.2(aws-cdk-lib@2.263.0(constructs@10.8.1))(constructs@10.8.1)
+      constructs:
+        specifier: ^10.4.2
+        version: 10.8.1
+
   infrastructure/org:
     dependencies:
       '@josephkan3/config':
