@@ -214,7 +214,7 @@ export class NetworkStack extends Stack {
     sg.addIngressRule(
       ec2.Peer.anyIpv4(),
       ec2.Port.udp(TAILSCALE_UDP_PORT),
-      "Tailscale WireGuard-based transport — required for any peer to reach this node directly.",
+      "Tailscale WireGuard-based transport. Required for any peer to reach this node directly.",
     );
     // AwsSolutions-EC23: this 0.0.0.0/0 inbound rule is exactly the single
     // exception ADR-0002's "public subnet, strict SG, zero unsolicited
