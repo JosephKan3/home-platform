@@ -123,6 +123,12 @@ describe("Tailscale subnet router", () => {
     expect(rendered).toContain("--advertise-routes=");
     expect(rendered).toContain("10.20.0.0/16");
     expect(rendered).toContain("ssm get-parameter");
+    // A real fix for a real failure (see createUserData's own comment):
+    // dnf install getting OOM-killed on the first live deploy. The
+    // swapfile must be created and active before dnf runs.
+    expect(rendered).toContain("fallocate -l 1G /swapfile");
+    expect(rendered).toContain("swapon /swapfile");
+    expect(rendered.indexOf("swapon /swapfile")).toBeLessThan(rendered.indexOf("dnf install"));
     expect(rendered).toContain("/platform/network/tailscale-auth-key");
   });
 });

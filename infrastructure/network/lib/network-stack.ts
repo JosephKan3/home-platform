@@ -329,11 +329,27 @@ export class NetworkStack extends Stack {
    * a client that should also pull in other routes, and Tailscale's own
    * docs warn against it specifically for HA failover scenarios this stack
    * may grow into later (a second subnet router for redundancy).
+   *
+   * The 1GB swapfile, created before `dnf install`, is a real fix for a
+   * real failure, not precautionary: the first live deploy of this stack
+   * hit `dnf install -y tailscale` getting OOM-killed on `t4g.nano`'s
+   * 512MB of RAM — confirmed via `dmesg` on the instance afterward
+   * (`Out of memory: Killed process ... (dnf) total-vm:1228224kB`, i.e.
+   * dnf's peak virtual memory usage exceeded even the AMI's small default
+   * swap). `t4g.nano` is otherwise the right instance size for a
+   * single-purpose relay (see that prop's own doc comment on cost) — the
+   * fix is more swap, not a bigger instance, since the memory pressure is
+   * a one-time install-time spike, not a steady-state requirement.
    */
   private createUserData(): ec2.UserData {
     const userData = ec2.UserData.forLinux();
     userData.addCommands(
       "set -euo pipefail",
+      "fallocate -l 1G /swapfile",
+      "chmod 600 /swapfile",
+      "mkswap /swapfile",
+      "swapon /swapfile",
+      "echo '/swapfile swap swap defaults 0 0' >> /etc/fstab",
       "cat <<'EOF' > /etc/yum.repos.d/tailscale.repo",
       "[tailscale-stable]",
       "name=Tailscale stable",
