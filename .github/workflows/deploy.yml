@@ -78,6 +78,20 @@ jobs:
   build:
     name: build + test
     runs-on: ubuntu-latest
+    # Real incident, 2026-10-16: a run queued behind this workflow's own
+    # deploy-main concurrency lock for seven days (approved once on Oct 8,
+    # then stuck waiting for a runner slot, not for review) finally executed
+    # its `prod` job against that seven-day-stale checkout. CloudFormation
+    # correctly reconciled the live account's drift against that stale
+    # template and deleted newnotams.net's Route53 zone and records (the
+    # certificate survived only because CloudFront still had it attached,
+    # which is what let the stuck DELETE retry loop run long enough to be
+    # cancelled mid-operation). No single job timeout would have prevented
+    # the seven-day queue wait itself, but 30 minutes bounds how long any
+    # one job can occupy the runner once it finally starts — this run's own
+    # prod job spent over 8 minutes stuck retrying one resource deletion
+    # before a human had to notice and cancel it by hand.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -106,6 +120,7 @@ jobs:
     # would deny it. It deploys with the prod role and therefore the prod gate.
     environment: prod
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -139,6 +154,7 @@ jobs:
     # carries a different sub and the AssumeRole is refused.
     environment: dev
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -210,6 +226,7 @@ jobs:
     # authentication. That is the intended property.
     environment: prod
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -219,6 +236,30 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
+
+      # Real incident, 2026-10-16: this job queued behind deploy-main's
+      # concurrency lock for seven days (approved once, right after `dev`
+      # passed on Oct 8 — this was never stuck on review, only on a runner
+      # slot) and then finally executed against that seven-day-stale
+      # checkout. CloudFormation reconciled the live account's drift
+      # against the stale template and deleted newnotams.net's Route53
+      # zone and records. `timeout-minutes: 30` above bounds how long this
+      # job can run once started; it cannot bound how long a job sits
+      # *queued*, which is the actual failure mode here — so this step
+      # refuses to proceed if the checked-out commit is more than 2 hours
+      # older than when the job actually started running. A deploy of code
+      # this stale against today's live state is exactly the scenario that
+      # caused the incident, regardless of how long ago it was approved.
+      - name: Refuse to deploy a checkout queued too long
+        run: |
+          COMMIT_TIME=$(git log -1 --format=%ct)
+          NOW=$(date +%s)
+          AGE_MINUTES=$(( (NOW - COMMIT_TIME) / 60 ))
+          if [ "$AGE_MINUTES" -gt 120 ]; then
+            echo "::error::This job's checkout is ${AGE_MINUTES} minutes old (commit $(git log -1 --format=%h), $(git log -1 --format=%cI)). Refusing to deploy — re-run this workflow from a fresh commit or re-dispatch it so it checks out current main instead of running stale code against today's live AWS state."
+            exit 1
+          fi
+          echo "Checkout is ${AGE_MINUTES} minutes old — within the 120-minute limit."
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -329,6 +370,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.apex_cutover
     environment: prod
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Require the distribution domain
         if: inputs.cloudfront_domain_name == ''

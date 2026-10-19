@@ -129,6 +129,30 @@ export interface DnsStackProps extends StackProps {
   readonly productCloudFrontDomainName?: string;
 
   /**
+   * Reuse an already-ISSUED certificate ARN instead of creating a new
+   * `acm.Certificate` resource for `newnotams.net`.
+   *
+   * Exists for exactly one real scenario, not speculative: `ProductZone`
+   * was deleted on 2026-10-16 by a seven-day-stale queued CI run executing
+   * against an outdated checkout (see the incident note in this repo's
+   * history for the full account) — the zone and its records were
+   * destroyed, but the certificate CloudFormation tried to delete
+   * alongside them failed over and over with "Certificate ... is in use"
+   * (it was still attached to `NewNotamsStack`'s live CloudFront
+   * distribution) and survives, `ISSUED`, completely undamaged. Recreating
+   * `ProductZone` without this prop would mint a *second* certificate and
+   * force a fresh DNS validation wait for a domain that is, apart from
+   * this zone, already fully cut over and serving real traffic — pure
+   * downtime-extending busywork for a resource that already exists and
+   * already works. `NewNotamsStack` reads the certificate ARN from SSM
+   * (`ssmPaths.certificateArn`), decoupled from this stack entirely (no
+   * CloudFormation export, ADR-0004) — so writing the same, still-valid
+   * ARN back to that parameter is the complete fix on the certificate
+   * side; nothing downstream needs to change at all.
+   */
+  readonly existingProductCertificateArn?: string;
+
+  /**
    * VPC ID to associate the `internal.josephkan.ca` private hosted zone with.
    *
    * A private hosted zone cannot exist without a VPC, and there is no VPC until
@@ -143,7 +167,7 @@ export class DnsStack extends Stack {
   readonly productZone?: route53.PublicHostedZone;
   readonly internalZone?: route53.PrivateHostedZone;
   readonly certificate: acm.Certificate;
-  readonly productCertificate?: acm.Certificate;
+  readonly productCertificate?: acm.ICertificate;
 
   constructor(scope: Construct, id: string, props: DnsStackProps = {}) {
     super(scope, id, props);
@@ -233,11 +257,24 @@ export class DnsStack extends Stack {
       // validation, so the stack completes with the certificate still
       // PENDING_VALIDATION. Add the CNAME, then confirm ISSUED out of band
       // before deploying anything that attaches it.
-      this.productCertificate = new acm.Certificate(this, "ProductCertificate", {
-        domainName: domains.product,
-        subjectAlternativeNames: [`www.${domains.product}`],
-        validation: acm.CertificateValidation.fromDns(),
-      });
+      //
+      // `existingProductCertificateArn` short-circuits all of the above: see
+      // that prop's own doc comment for the real incident that made this
+      // necessary. `fromCertificateArn` returns a reference CloudFormation
+      // does not manage or own — recreating this zone will never again
+      // attempt to delete a certificate that some other stack still has
+      // attached, however `createProductZone` is toggled in the future.
+      this.productCertificate = props.existingProductCertificateArn
+        ? acm.Certificate.fromCertificateArn(
+            this,
+            "ProductCertificate",
+            props.existingProductCertificateArn,
+          )
+        : new acm.Certificate(this, "ProductCertificate", {
+            domainName: domains.product,
+            subjectAlternativeNames: [`www.${domains.product}`],
+            validation: acm.CertificateValidation.fromDns(),
+          });
       new ssm.StringParameter(this, "ProductCertificateArnParameter", {
         parameterName: ssmPaths.certificateArn(domains.product),
         stringValue: this.productCertificate.certificateArn,

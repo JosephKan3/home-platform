@@ -53,6 +53,7 @@ new DnsStack(app, "DnsStack", {
     app.node.tryGetContext("createProductZone") === "true",
   productOrigin,
   productCloudFrontDomainName: app.node.tryGetContext("productCloudFrontDomainName"),
+  existingProductCertificateArn: app.node.tryGetContext("existingProductCertificateArn"),
   internalZoneVpcId: app.node.tryGetContext("internalZoneVpcId"),
 });
 
