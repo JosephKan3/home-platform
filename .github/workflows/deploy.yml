@@ -302,10 +302,38 @@ jobs:
       # Step 3. Certificate ARN lands in SSM here; the site stack reads it.
       # `origin` defaults to vercel (cdk.json). Flipping it is the apex cutover
       # and is NOT part of this job — see apex-cutover below.
+      #
+      # Real incident, recurred TWICE (2026-10-16 and 2026-10-20) before this
+      # fix: every prior run of this exact step passed none of the four
+      # context flags below. createProductZone defaults to false, so every
+      # single automated deploy deleted newnotams.net's ProductZone and its
+      # records outright -- CloudFormation correctly reconciling "this
+      # resource is not in the template" against a zone that had been
+      # created manually, outside this workflow, and was never declared
+      # here. The certificate alone survived both times, purely because
+      # NewNotamsStack's CloudFront distribution still had it attached and
+      # ACM refuses to delete a certificate that is in use.
+      #
+      # This is not a one-time recovery flag set manually after an
+      # incident: newnotams.net is permanently cut over to Route53/
+      # CloudFront (ADR-0006's Stage D/G are done), so createProductZone
+      # and productOrigin=cloudfront are this domain's real, permanent
+      # state, not a transient migration flag. internalZoneVpcId is the
+      # same story for internal.josephkan.ca (Phase 1's Tailscale private
+      # zone) -- both deleted a second time alongside ProductZone on
+      # 2026-10-20 for the exact same reason. existingProductCertificateArn
+      # reuses the one certificate that has survived both incidents rather
+      # than minting a new one and forcing a fresh DNS validation wait on a
+      # domain that already works.
       - name: Deploy DnsStack
         run: >-
           pnpm --filter @platform/infra-dns exec cdk deploy DnsStack
           --require-approval never
+          -c createProductZone=true
+          -c productOrigin=cloudfront
+          -c productCloudFrontDomainName=${{ vars.NEWNOTAMS_CLOUDFRONT_DOMAIN }}
+          -c existingProductCertificateArn=${{ vars.NEWNOTAMS_CERTIFICATE_ARN }}
+          -c internalZoneVpcId=${{ vars.NETWORK_VPC_ID }}
 
       # Step 4. Needs the real Next.js static export. `-c sitePlaceholder=true`
       # is a synth-only flag: deploying with it would publish a placeholder page
@@ -401,11 +429,24 @@ jobs:
       # Diff first, and read it. It should show exactly two changes: the apex A
       # record replaced by an ALIAS, and the www CNAME replaced by an ALIAS.
       # Anything else moving means stop.
+      #
+      # The product-zone flags below are NOT part of the apex cutover this
+      # job performs — they exist so this diff/deploy pair evaluates the
+      # same DnsStack shape deploy-prod's own "Deploy DnsStack" step does
+      # (see that step's comment for the full incident). Omitting them here
+      # would make this job delete newnotams.net's ProductZone on every
+      # manual apex-cutover run, exactly the failure that step already
+      # suffered twice.
       - name: Diff the cutover
         run: >-
           pnpm --filter @platform/infra-dns exec cdk diff DnsStack
           -c origin=cloudfront
           -c cloudFrontDomainName=${{ inputs.cloudfront_domain_name }}
+          -c createProductZone=true
+          -c productOrigin=cloudfront
+          -c productCloudFrontDomainName=${{ vars.NEWNOTAMS_CLOUDFRONT_DOMAIN }}
+          -c existingProductCertificateArn=${{ vars.NEWNOTAMS_CERTIFICATE_ARN }}
+          -c internalZoneVpcId=${{ vars.NETWORK_VPC_ID }}
 
       - name: Cut the apex over to CloudFront
         run: >-
@@ -413,6 +454,11 @@ jobs:
           --require-approval never
           -c origin=cloudfront
           -c cloudFrontDomainName=${{ inputs.cloudfront_domain_name }}
+          -c createProductZone=true
+          -c productOrigin=cloudfront
+          -c productCloudFrontDomainName=${{ vars.NEWNOTAMS_CLOUDFRONT_DOMAIN }}
+          -c existingProductCertificateArn=${{ vars.NEWNOTAMS_CERTIFICATE_ARN }}
+          -c internalZoneVpcId=${{ vars.NETWORK_VPC_ID }}
 
       - name: Verify
         run: |
