@@ -16,12 +16,12 @@
     "@josephkan3/constructs": "workspace:*"
   },
   "devDependencies": {
-    "aws-cdk-lib": "^2.173.2",
+    "aws-cdk-lib": "^2.274.0",
     "cdk-nag": "^3.0.2",
     "constructs": "^10.4.2"
   },
   "peerDependencies": {
-    "aws-cdk-lib": "^2.173.2",
+    "aws-cdk-lib": "^2.274.0",
     "constructs": "^10.4.2"
   }
 }
